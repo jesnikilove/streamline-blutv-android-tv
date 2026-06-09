@@ -256,6 +256,8 @@ function titleForView(view) {
 function bindActions() {
   $("favoriteButton").addEventListener("click", toggleSelectedFavorite);
   $("fullscreenButton").addEventListener("click", toggleFullscreen);
+  document.addEventListener("fullscreenchange", syncFullscreenButton);
+  document.addEventListener("webkitfullscreenchange", syncFullscreenButton);
   $("sortMovies").addEventListener("click", () => {
     state.movieSortAsc = !state.movieSortAsc;
     $("sortMovies").textContent = state.movieSortAsc ? "A-Z" : "Z-A";
@@ -278,17 +280,37 @@ function bindActions() {
 }
 
 async function toggleFullscreen() {
+  await openPlayerFullscreen();
+}
+
+async function openPlayerFullscreen() {
   try {
-    if (!document.fullscreenElement) {
-      await document.documentElement.requestFullscreen();
-      $("fullscreenButton").textContent = "Exit Fullscreen";
+    const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!fullscreenElement) {
+      const target = $("videoFrame");
+      if (target.requestFullscreen) {
+        await target.requestFullscreen();
+      } else if (target.webkitRequestFullscreen) {
+        target.webkitRequestFullscreen();
+      } else {
+        throw new Error("Fullscreen unsupported");
+      }
     } else {
-      await document.exitFullscreen();
-      $("fullscreenButton").textContent = "Fullscreen";
+      if (document.exitFullscreen) {
+        await document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
     }
+    syncFullscreenButton();
   } catch (_error) {
     toast("Fullscreen is blocked by this browser.");
   }
+}
+
+function syncFullscreenButton() {
+  const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
+  $("fullscreenButton").textContent = fullscreenElement ? "Exit Player" : "Player Fullscreen";
 }
 
 function renderAll() {
@@ -325,9 +347,11 @@ function renderLive() {
     row.className = "list-row focusable" + (ch.id === state.selectedChannelId ? " active" : "");
     row.innerHTML = `<span class="row-title">${isFavorite(ch.id) ? "Star " : ""}${ch.name}</span><span class="row-sub">${ch.program}</span>`;
     row.addEventListener("click", () => {
+      const alreadySelected = state.selectedChannelId === ch.id;
       state.selectedChannelId = ch.id;
       renderLive();
       playSelectedChannel(true);
+      if (alreadySelected) openPlayerFullscreen();
     });
     list.appendChild(row);
   });

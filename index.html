@@ -63,8 +63,8 @@
             <h2 id="sectionTitle">All Channels</h2>
           </div>
           <div class="top-actions">
+            <button id="fullscreenButton" class="ghost-btn focusable compact" type="button">Player Fullscreen</button>
             <div class="status-pill"><span id="clockText"></span><span id="providerText">Demo Provider</span></div>
-            <button id="fullscreenButton" class="ghost-btn focusable compact" type="button">Fullscreen</button>
           </div>
         </header>
 
@@ -81,7 +81,7 @@
             </div>
 
             <div class="player-panel">
-              <div class="video-frame">
+              <div id="videoFrame" class="video-frame">
                 <video id="videoPlayer" playsinline muted loop poster="https://images.unsplash.com/photo-1593789198777-f29bc259780e?auto=format&fit=crop&w=1200&q=80"></video>
                 <div id="videoOverlay" class="video-overlay">
                   <span id="playState">Ready</span>
