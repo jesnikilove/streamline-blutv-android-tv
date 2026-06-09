@@ -257,6 +257,12 @@ input {
   margin-bottom: 22px;
 }
 
+.top-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
 .kicker {
   margin: 0 0 6px;
   color: var(--teal);

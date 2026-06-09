@@ -255,6 +255,7 @@ function titleForView(view) {
 
 function bindActions() {
   $("favoriteButton").addEventListener("click", toggleSelectedFavorite);
+  $("fullscreenButton").addEventListener("click", toggleFullscreen);
   $("sortMovies").addEventListener("click", () => {
     state.movieSortAsc = !state.movieSortAsc;
     $("sortMovies").textContent = state.movieSortAsc ? "A-Z" : "Z-A";
@@ -274,6 +275,20 @@ function bindActions() {
     renderAll();
     toast("Demo cache cleared");
   });
+}
+
+async function toggleFullscreen() {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen();
+      $("fullscreenButton").textContent = "Exit Fullscreen";
+    } else {
+      await document.exitFullscreen();
+      $("fullscreenButton").textContent = "Fullscreen";
+    }
+  } catch (_error) {
+    toast("Fullscreen is blocked by this browser.");
+  }
 }
 
 function renderAll() {
