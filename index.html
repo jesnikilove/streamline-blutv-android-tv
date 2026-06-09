@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Streamline BluTV</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main id="app" class="app-shell">
+    <section id="loginScreen" class="login-screen" aria-label="Streamline BluTV login">
+      <div class="brand-panel">
+        <div class="brand-mark">SB</div>
+        <div>
+          <h1>Streamline BluTV</h1>
+          <p>Live TV, movies, series, and guide in one clean TV layout.</p>
+        </div>
+      </div>
+
+      <div class="login-card">
+        <div class="segmented" role="tablist">
+          <button class="segment active focusable" data-login-mode="xtream" type="button">Xtream Codes</button>
+          <button class="segment focusable" data-login-mode="m3u" type="button">M3U Playlist</button>
+        </div>
+
+        <div id="xtreamForm" class="form-grid">
+          <label>Server URL<input class="focusable" id="serverInput" value="https://provider.example.com:8080"></label>
+          <label>Username<input class="focusable" id="usernameInput" value="demo_user"></label>
+          <label>Password<input class="focusable" id="passwordInput" value="demo_pass" type="password"></label>
+        </div>
+
+        <div id="m3uForm" class="form-grid hidden">
+          <label>Playlist URL<input class="focusable" id="playlistInput" value="https://provider.example.com/get.php?type=m3u_plus"></label>
+        </div>
+
+        <div class="login-actions">
+          <button id="loginButton" class="primary-btn focusable" type="button">Continue</button>
+          <button id="demoButton" class="ghost-btn focusable" type="button">Demo Library</button>
+        </div>
+        <p id="loginStatus" class="login-status"></p>
+      </div>
+    </section>
+
+    <section id="homeScreen" class="tv-screen hidden" aria-label="Streamline BluTV app">
+      <aside class="rail">
+        <div class="rail-brand">
+          <div class="brand-mark small">SB</div>
+          <span>Streamline</span>
+        </div>
+        <button class="nav-item active focusable" data-view="live" type="button"><span class="nav-icon">TV</span><span>Live TV</span></button>
+        <button class="nav-item focusable" data-view="guide" type="button"><span class="nav-icon">EPG</span><span>Guide</span></button>
+        <button class="nav-item focusable" data-view="movies" type="button"><span class="nav-icon">MOV</span><span>Movies</span></button>
+        <button class="nav-item focusable" data-view="series" type="button"><span class="nav-icon">SER</span><span>Series</span></button>
+        <button class="nav-item focusable" data-view="favorites" type="button"><span class="nav-icon">FAV</span><span>Favorites</span></button>
+        <button class="nav-item focusable" data-view="search" type="button"><span class="nav-icon">SRC</span><span>Search</span></button>
+        <button class="nav-item focusable" data-view="settings" type="button"><span class="nav-icon">SET</span><span>Settings</span></button>
+      </aside>
+
+      <div class="main-pane">
+        <header class="topbar">
+          <div>
+            <p id="sectionKicker" class="kicker">Live TV</p>
+            <h2 id="sectionTitle">All Channels</h2>
+          </div>
+          <div class="status-pill"><span id="clockText"></span><span id="providerText">Demo Provider</span></div>
+        </header>
+
+        <section id="viewLive" class="view active">
+          <div class="live-layout">
+            <div class="category-panel">
+              <div class="panel-title">Categories</div>
+              <div id="liveCategories" class="stack-list"></div>
+            </div>
+
+            <div class="channel-panel">
+              <div class="panel-title">Channels</div>
+              <div id="channelList" class="stack-list"></div>
+            </div>
+
+            <div class="player-panel">
+              <div class="video-frame">
+                <video id="videoPlayer" playsinline muted loop poster="https://images.unsplash.com/photo-1593789198777-f29bc259780e?auto=format&fit=crop&w=1200&q=80"></video>
+                <div id="videoOverlay" class="video-overlay">
+                  <span id="playState">Ready</span>
+                </div>
+              </div>
+              <div class="now-card">
+                <div>
+                  <p id="nowCategory" class="kicker">Entertainment</p>
+                  <h3 id="nowTitle">Select a channel</h3>
+                  <p id="nowDesc">Channel details and current program will appear here.</p>
+                </div>
+                <button id="favoriteButton" class="icon-btn focusable" type="button">Favorite</button>
+              </div>
+              <div id="miniGuide" class="mini-guide"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="viewGuide" class="view">
+          <div class="guide-grid">
+            <div class="guide-left">Channel</div>
+            <div id="guideTimes" class="guide-times"></div>
+            <div id="guideRows" class="guide-rows"></div>
+          </div>
+        </section>
+
+        <section id="viewMovies" class="view">
+          <div class="content-toolbar">
+            <div id="movieTabs" class="chip-row"></div>
+            <button id="sortMovies" class="ghost-btn focusable compact" type="button">A-Z</button>
+          </div>
+          <div id="movieGrid" class="poster-grid"></div>
+        </section>
+
+        <section id="viewSeries" class="view">
+          <div class="series-layout">
+            <div>
+              <div id="seriesGrid" class="poster-grid series-grid"></div>
+            </div>
+            <div id="seriesDetail" class="detail-panel"></div>
+          </div>
+        </section>
+
+        <section id="viewFavorites" class="view">
+          <div id="favoritesEmpty" class="empty-state">No favorites yet.</div>
+          <div id="favoritesGrid" class="poster-grid"></div>
+        </section>
+
+        <section id="viewSearch" class="view">
+          <div class="search-box">
+            <input id="searchInput" class="focusable" placeholder="Search channels, movies, and series" autocomplete="off">
+          </div>
+          <div id="suggestionRow" class="chip-row"></div>
+          <div id="searchResults" class="search-results"></div>
+        </section>
+
+        <section id="viewSettings" class="view">
+          <div class="settings-grid">
+            <div class="settings-card">
+              <h3>Provider</h3>
+              <p id="settingsProvider">Demo Provider</p>
+              <button id="changeLogin" class="primary-btn focusable" type="button">Change Login</button>
+            </div>
+            <div class="settings-card">
+              <h3>Playback</h3>
+              <label class="toggle-row"><span>Prefer HLS</span><input id="hlsToggle" class="focusable" type="checkbox" checked></label>
+              <label class="toggle-row"><span>Autoplay Preview</span><input id="autoplayToggle" class="focusable" type="checkbox" checked></label>
+            </div>
+            <div class="settings-card">
+              <h3>Cache</h3>
+              <p id="cacheInfo">VOD and guide cache ready.</p>
+              <button id="clearCache" class="ghost-btn focusable" type="button">Clear Demo Cache</button>
+            </div>
+            <div class="settings-card">
+              <h3>About</h3>
+              <p>Streamline BluTV Android TV mockup</p>
+              <p>Build WEB-0001</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

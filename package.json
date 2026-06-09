@@ -1,0 +1,10 @@
+{
+  "name": "streamline-blutv-android-tv",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Streamline BluTV Android TV style web prototype with Xtream and M3U testing proxy.",
+  "scripts": {
+    "start": "node server/server.js",
+    "check": "node --check app.js && node --check server/server.js"
+  }
+}

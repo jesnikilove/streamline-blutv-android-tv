@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="blu.cinema" tvg-name="Blu Cinema HD" tvg-logo="" group-title="Movies",Blu Cinema HD
+https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4
+#EXTINF:-1 tvg-id="prime.crime" tvg-name="Prime Crime" tvg-logo="" group-title="Entertainment",Prime Crime
+https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4
+#EXTINF:-1 tvg-id="faith.network" tvg-name="Sunday Faith Network" tvg-logo="" group-title="Faith",Sunday Faith Network
+https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4
