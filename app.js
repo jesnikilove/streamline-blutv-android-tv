@@ -61,7 +61,7 @@ function channel(id, name, category, program, description, image) {
 }
 
 function movie(id, title, category, year, image) {
-  return { id, title, category, year, image, type: "Movie" };
+  return { id, title, category, year, image, type: "Movie", streamUrl: videoUrl };
 }
 
 function series(id, title, category, seasons, image) {
@@ -69,7 +69,7 @@ function series(id, title, category, seasons, image) {
   for (let s = 1; s <= Math.min(seasons, 6); s += 1) {
     const episodes = [];
     for (let e = 1; e <= 5; e += 1) {
-      episodes.push({ season: s, episode: e, title: `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")} - Episode ${e}` });
+      episodes.push({ season: s, episode: e, title: `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")} - Episode ${e}`, streamUrl: videoUrl });
     }
     seasonList.push({ season: s, episodes });
   }
@@ -408,6 +408,31 @@ function playSelectedChannel(showToast) {
   if (showToast) toast(`Opening ${ch.name}`);
 }
 
+function playMedia(item, showToast = true) {
+  const title = item.title || item.name || "Selected title";
+  $("nowCategory").textContent = item.category || item.type || "Now Playing";
+  $("nowTitle").textContent = title;
+  $("nowDesc").textContent = item.description || item.program || `${item.type || "Video"} playback`;
+  $("favoriteButton").textContent = isFavorite(item.id) ? "Unfavorite" : "Favorite";
+
+  const player = $("videoPlayer");
+  player.poster = item.image || "";
+  player.src = item.streamUrl || videoUrl;
+  player.onerror = () => {
+    $("playState").textContent = "Preview";
+    player.src = videoUrl;
+    player.play().catch(() => {});
+  };
+  player.play().then(() => {
+    $("playState").textContent = "Playing";
+  }).catch(() => {
+    $("playState").textContent = "Preview";
+  });
+  setView("live");
+  if (showToast) toast(`Opening ${title}`);
+  setTimeout(() => openPlayerFullscreen(), 80);
+}
+
 function toggleSelectedFavorite() {
   const ch = selectedChannel();
   toggleFavorite(ch.id);
@@ -460,7 +485,7 @@ function renderMovies() {
 
   let movies = state.movieCategory === "Featured" ? [...data.movies] : data.movies.filter((m) => m.category === state.movieCategory);
   movies.sort((a, b) => state.movieSortAsc ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title));
-  renderPosterGrid($("movieGrid"), movies);
+  renderPosterGrid($("movieGrid"), movies, playMedia);
 }
 
 function renderSeries() {
@@ -492,10 +517,46 @@ function renderSeriesDetail() {
       row.type = "button";
       row.className = "episode-row focusable";
       row.innerHTML = `<span>${ep.title}</span><span>Play</span>`;
-      row.addEventListener("click", () => toast(`Opening ${show.title} ${ep.title}`));
+      row.addEventListener("click", async () => {
+        let episode = ep;
+        if (!episode.streamUrl && show.seriesId) {
+          row.querySelector("span:last-child").textContent = "Loading";
+          try {
+            await loadSeriesEpisodes(show);
+            const season = show.seasonList.find((item) => Number(item.season) === Number(ep.season));
+            episode = season?.episodes.find((item) => Number(item.episode) === Number(ep.episode)) || season?.episodes[0] || ep;
+          } catch (error) {
+            toast(error.message || "Playing preview.");
+            row.querySelector("span:last-child").textContent = "Play";
+          }
+        }
+        playMedia({
+          id: `${show.id}-${episode.season}-${episode.episode}`,
+          title: `${show.title} ${episode.title}`,
+          category: show.category,
+          image: show.image,
+          type: "Episode",
+          streamUrl: episode.streamUrl
+        });
+      });
       episodes.appendChild(row);
     });
   });
+}
+
+async function loadSeriesEpisodes(show) {
+  if (!show.seriesId) return show.seasonList;
+  const response = await fetch("/api/series-info", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seriesId: show.seriesId })
+  });
+  const parsed = await response.json();
+  if (!response.ok || !parsed.ok) throw new Error(parsed.message || "Series details failed.");
+  show.seasonList = parsed.data.seasonList || show.seasonList;
+  show.seasons = show.seasonList.length || show.seasons;
+  renderSeriesDetail();
+  return show.seasonList;
 }
 
 function renderPosterGrid(container, items, handler) {
@@ -510,7 +571,7 @@ function renderPosterGrid(container, items, handler) {
     `;
     card.addEventListener("click", () => {
       if (handler) handler(item);
-      else toast(`Opening ${item.title}`);
+      else playMedia(item);
     });
     container.appendChild(card);
   });
@@ -527,7 +588,7 @@ function renderFavorites() {
 }
 
 function renderSearch() {
-  const q = $("searchInput")?.value?.trim().toLowerCase() || "";
+  const q = normalizeSearch($("searchInput")?.value || "");
   const suggestions = ["law and order", "halloween", "prime crime", "faith", "sports", "kids"];
   const suggestionRow = $("suggestionRow");
   suggestionRow.innerHTML = "";
@@ -544,21 +605,54 @@ function renderSearch() {
   });
 
   const everything = [
-    ...data.channels.map((item) => ({ title: item.name, subtitle: item.program, type: "Channel", image: item.image })),
-    ...data.movies.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.year}`, type: "Movie", image: item.image })),
-    ...data.series.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.seasons} seasons`, type: "Series", image: item.image }))
+    ...data.channels.map((item) => ({ title: item.name, subtitle: item.program, type: "Channel", image: item.image, item })),
+    ...data.movies.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.year || ""}`, type: "Movie", image: item.image, item })),
+    ...data.series.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.seasons} seasons`, type: "Series", image: item.image, item }))
   ];
-  const results = (q ? everything.filter((item) => `${item.title} ${item.subtitle} ${item.type}`.toLowerCase().includes(q)) : everything).slice(0, 16);
+  const terms = q.split(" ").filter(Boolean);
+  const results = (q ? everything.filter((item) => {
+    const haystack = normalizeSearch(`${item.title} ${item.subtitle} ${item.type}`);
+    return terms.every((term) => haystack.includes(term));
+  }) : everything).slice(0, 24);
   const box = $("searchResults");
   box.innerHTML = "";
+  if (results.length === 0) {
+    box.innerHTML = `<div class="empty-state">No results found.</div>`;
+    return;
+  }
   results.forEach((item) => {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "search-row focusable";
     row.innerHTML = `<span class="search-type">${item.type}</span><span><strong>${item.title}</strong><br><small>${item.subtitle}</small></span><span>Open</span>`;
-    row.addEventListener("click", () => toast(`Opening ${item.title}`));
+    row.addEventListener("click", () => openSearchResult(item));
     box.appendChild(row);
   });
+}
+
+function openSearchResult(result) {
+  if (result.type === "Channel") {
+    state.category = "All Channels";
+    state.selectedChannelId = result.item.id;
+    setView("live");
+    renderLive();
+    playSelectedChannel(true);
+    return;
+  }
+  if (result.type === "Movie") {
+    playMedia(result.item);
+    return;
+  }
+  if (result.type === "Series") {
+    state.selectedSeriesId = result.item.id;
+    setView("series");
+    renderSeriesDetail();
+    toast(`Opening ${result.item.title}`);
+  }
+}
+
+function normalizeSearch(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function updateClock() {

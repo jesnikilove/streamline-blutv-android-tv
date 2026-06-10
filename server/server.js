@@ -4,6 +4,8 @@ const path = require("path");
 
 const root = path.resolve(__dirname, "..");
 const port = Number(process.env.PORT || 4188);
+const host = process.env.HOST || "127.0.0.1";
+let providerSession = invalidSession();
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -25,12 +27,17 @@ http.createServer(async (req, res) => {
       const result = body.mode === "m3u" ? await loadM3u(body.playlistUrl) : await loadXtream(body);
       return sendJson(res, 200, { ok: true, data: result });
     }
+    if (req.method === "POST" && req.url === "/api/series-info") {
+      const body = await readJson(req);
+      const result = await loadSeriesInfo(body.seriesId);
+      return sendJson(res, 200, { ok: true, data: result });
+    }
     return serveFile(req, res);
   } catch (error) {
     return sendJson(res, 400, { ok: false, message: error.message || "Request failed." });
   }
-}).listen(port, () => {
-  console.log(`Streamline BluTV preview running at http://127.0.0.1:${port}`);
+}).listen(port, host, () => {
+  console.log(`Streamline BluTV preview running at http://${host}:${port}`);
 });
 
 function setCors(res) {
@@ -74,6 +81,7 @@ async function loadXtream({ server, username, password }) {
 
   const auth = await fetchJson(`${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`);
   if (auth.user_info && Number(auth.user_info.auth) === 0) throw new Error("Provider rejected this login.");
+  providerSession = { base, username, password };
 
   const [liveCats, liveStreams, vodCats, vodStreams, seriesStreams] = await Promise.all([
     fetchJson(`${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_categories`).catch(() => []),
@@ -108,6 +116,7 @@ async function loadXtream({ server, username, password }) {
 
   const series = asArray(seriesStreams).slice(0, 600).map((item, index) => ({
     id: `series-${item.series_id || index}`,
+    seriesId: item.series_id,
     title: text(item.name, `Series ${index + 1}`),
     category: vodMap[item.category_id] || "Series",
     seasons: 1,
@@ -117,6 +126,26 @@ async function loadXtream({ server, username, password }) {
   }));
 
   return normalizeLibrary(channels, movies, series);
+}
+
+async function loadSeriesInfo(seriesId) {
+  if (!providerSession.base) throw new Error("Load an Xtream provider before playing series.");
+  if (!seriesId) throw new Error("Missing series id.");
+  const { base, username, password } = providerSession;
+  const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(seriesId)}`;
+  const info = await fetchJson(url);
+  const seasons = [];
+  const episodesBySeason = info.episodes || {};
+  Object.keys(episodesBySeason).sort((a, b) => Number(a) - Number(b)).forEach((seasonKey) => {
+    const episodes = asArray(episodesBySeason[seasonKey]).map((ep, index) => ({
+      season: Number(seasonKey) || 1,
+      episode: Number(ep.episode_num || index + 1),
+      title: text(ep.title, `Episode ${index + 1}`),
+      streamUrl: `${base}/series/${username}/${password}/${ep.id}.${ep.container_extension || "mp4"}`
+    }));
+    if (episodes.length) seasons.push({ season: Number(seasonKey) || 1, episodes });
+  });
+  return { seasonList: seasons.length ? seasons : demoSeasons() };
 }
 
 async function loadM3u(playlistUrl) {
@@ -257,6 +286,10 @@ function fallbackPoster(index) {
     "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=600&q=80"
   ];
   return images[index % images.length];
+}
+
+function invalidSession() {
+  return { base: "", username: "", password: "" };
 }
 
 function sendJson(res, status, payload) {
