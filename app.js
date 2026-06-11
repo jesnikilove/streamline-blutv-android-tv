@@ -409,8 +409,7 @@ function showHome() {
   $("loginScreen").classList.add("hidden");
   $("homeScreen").classList.remove("hidden");
   $("homeScreen").dataset.activeView = state.view;
-  $("providerText").textContent = localStorage.getItem("streamlineProviderName") || "Demo Provider";
-  $("settingsProvider").textContent = $("providerText").textContent;
+  $("settingsProvider").textContent = localStorage.getItem("streamlineProviderName") || "Demo Provider";
   updateCacheInfo();
   renderLive();
   playSelectedChannel(false);
