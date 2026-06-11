@@ -45,7 +45,8 @@ input {
 .app-shell {
   min-height: 100vh;
   background:
-    linear-gradient(115deg, rgba(128, 72, 255, 0.34), rgba(79, 220, 202, 0.22)),
+    linear-gradient(115deg, rgba(128, 72, 255, 0.34), rgba(37, 124, 255, 0.22), rgba(79, 220, 202, 0.2)),
+    linear-gradient(32deg, rgba(245, 196, 69, 0.08), rgba(240, 68, 68, 0.08) 46%, rgba(37, 124, 255, 0.1)),
     linear-gradient(90deg, rgba(12, 10, 28, 0.96), rgba(24, 20, 54, 0.86));
 }
 
@@ -150,12 +151,13 @@ input {
 .primary-btn,
 .nav-item.active,
 .chip.active {
-  background: linear-gradient(135deg, var(--violet), var(--aqua));
+  background: linear-gradient(135deg, var(--violet), var(--blue) 52%, var(--aqua));
   color: #fff;
 }
 
 .ghost-btn {
-  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(245, 196, 69, 0.28);
+  background: rgba(245, 196, 69, 0.1);
 }
 
 .ghost-btn.compact {
@@ -247,6 +249,14 @@ input {
   color: var(--gold);
   font-size: 12px;
   font-weight: 800;
+}
+
+.nav-item:nth-of-type(3n) .nav-icon {
+  color: var(--red);
+}
+
+.nav-item:nth-of-type(3n + 1) .nav-icon {
+  color: var(--blue);
 }
 
 .main-pane {
@@ -366,8 +376,8 @@ p {
 }
 
 .list-row.active {
-  background: rgba(79, 220, 202, 0.22);
-  border-color: rgba(79, 220, 202, 0.64);
+  background: linear-gradient(135deg, rgba(128, 72, 255, 0.28), rgba(37, 124, 255, 0.18));
+  border-color: rgba(245, 196, 69, 0.62);
 }
 
 .row-title {
@@ -449,7 +459,7 @@ p {
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: var(--radius);
   color: var(--text);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(37, 124, 255, 0.18);
   cursor: pointer;
 }
 
@@ -504,7 +514,8 @@ p {
   gap: 12px;
   padding: 10px 12px;
   border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(37, 124, 255, 0.16);
+  background: rgba(37, 124, 255, 0.09);
 }
 
 .guide-item span:first-child {
@@ -514,7 +525,7 @@ p {
 
 .guide-grid {
   border: 1px solid var(--line);
-  background: rgba(16, 27, 43, 0.84);
+  background: rgba(24, 22, 48, 0.84);
   border-radius: var(--radius);
   overflow: hidden;
 }
@@ -576,7 +587,7 @@ p {
 }
 
 .program-block.now {
-  background: rgba(128, 72, 255, 0.22);
+  background: linear-gradient(135deg, rgba(128, 72, 255, 0.22), rgba(245, 196, 69, 0.16));
 }
 
 .content-toolbar {
@@ -606,7 +617,12 @@ p {
 .poster-card {
   overflow: hidden;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(37, 124, 255, 0.18);
+  background: linear-gradient(180deg, rgba(37, 124, 255, 0.12), rgba(128, 72, 255, 0.12));
+}
+
+.poster-card:focus {
+  border-color: rgba(245, 196, 69, 0.78);
 }
 
 .movie-detail {
@@ -618,13 +634,16 @@ p {
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: linear-gradient(135deg, rgba(128, 72, 255, 0.22), rgba(79, 220, 202, 0.12));
+  background:
+    linear-gradient(135deg, rgba(128, 72, 255, 0.28), rgba(37, 124, 255, 0.16)),
+    linear-gradient(32deg, rgba(245, 196, 69, 0.12), rgba(240, 68, 68, 0.1));
   box-shadow: 0 26px 60px var(--shadow);
 }
 
 .movie-backdrop {
   min-height: 220px;
   border-radius: var(--radius);
+  border: 1px solid rgba(245, 196, 69, 0.34);
   background: center/cover;
 }
 

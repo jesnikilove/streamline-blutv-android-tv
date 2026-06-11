@@ -614,8 +614,13 @@ function renderMovies() {
 }
 
 function openMovieDetail(movie) {
+  if (!movie) return;
   state.selectedMovieId = movie.id;
+  $("videoPlayer").pause();
+  showPlayerControls(false);
   setView("movies");
+  $("sectionKicker").textContent = "Movie Info";
+  $("sectionTitle").textContent = movie.title;
   renderMovieDetail();
   $("movieDetail").scrollIntoView({ behavior: "smooth", block: "start" });
   const playButton = $("moviePlayButton");
@@ -732,7 +737,9 @@ function renderPosterGrid(container, items, handler) {
       <div class="poster-art" style="background-image:url('${item.image}')"></div>
       <div class="poster-info"><strong>${item.title}</strong><span>${item.category} ${item.year || ""}</span></div>
     `;
-    card.addEventListener("click", () => {
+    card.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       if (handler) handler(item);
       else playMedia(item);
     });
