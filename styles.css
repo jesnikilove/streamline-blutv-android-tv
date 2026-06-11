@@ -851,6 +851,10 @@ p {
   color: var(--muted);
 }
 
+.grid-note {
+  grid-column: 1 / -1;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(280px, 1fr));

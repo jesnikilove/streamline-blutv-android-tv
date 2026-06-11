@@ -1,4 +1,17 @@
 const videoUrl = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
+const gridLimit = 240;
+const smartCategoryRules = [
+  { name: "Women", terms: ["women", "woman", "her", "own", "lifetime", "we tv", "cleo"] },
+  { name: "Christmas", terms: ["christmas", "holiday", "xmas", "santa", "hallmark"] },
+  { name: "Crime", terms: ["crime", "investigation", "mystery", "court", "law", "justice", "forensic"] },
+  { name: "Prime Crime", terms: ["prime crime", "crime stories", "true crime"] },
+  { name: "Documentaries", terms: ["documentary", "docu", "history", "smithsonian", "nat geo", "discovery", "science"] },
+  { name: "Music", terms: ["music", "mtv", "vh1", "radio", "hits", "jazz", "country"] },
+  { name: "Local", terms: ["local", "abc ", "cbs ", "nbc ", "fox ", "cw ", "news 12", "sn1"] },
+  { name: "Kids", terms: ["kids", "nick", "disney", "cartoon", "baby", "boomerang"] },
+  { name: "Sports", terms: ["sports", "espn", "nfl", "nba", "mlb", "nhl", "tennis", "golf"] },
+  { name: "Movies", terms: ["movie", "cinema", "film", "hbo", "starz", "showtime", "flix"] }
+];
 
 const state = {
   loginMode: "xtream",
@@ -89,6 +102,7 @@ function init() {
   if (cache) {
     try {
       data = JSON.parse(cache);
+      data.categories = buildLiveCategories(data.channels || [], data.categories || []);
       state.usingProviderData = true;
       state.category = data.categories[0] || state.category;
       state.selectedChannelId = data.channels[0]?.id || state.selectedChannelId;
@@ -180,6 +194,7 @@ async function loadProviderCatalog(payload) {
 
   data = parsed.data;
   state.usingProviderData = true;
+  data.categories = buildLiveCategories(data.channels, data.categories);
   state.category = data.categories[0] || "All Channels";
   state.selectedChannelId = data.channels[0]?.id || "";
   state.movieCategory = data.movieTabs[0] || "Featured";
@@ -198,6 +213,16 @@ function persistProviderCache(library) {
     localStorage.removeItem("streamlineProviderCache");
     toast("Full catalog loaded for this session. Cache was too large to save.");
   }
+}
+
+function buildLiveCategories(channels, existingCategories) {
+  const categories = ["All Channels", ...existingCategories.filter((cat) => cat !== "All Channels")];
+  smartCategoryRules.forEach((rule) => {
+    if (!categories.includes(rule.name) && channels.some((ch) => matchesSmartCategory(ch, rule))) {
+      categories.push(rule.name);
+    }
+  });
+  return categories;
 }
 
 function setLoginStatus(message) {
@@ -497,11 +522,18 @@ function renderLive() {
 
 function filteredChannels() {
   if (state.category === "All Channels") return data.channels;
+  const smart = smartCategoryRules.find((rule) => rule.name === state.category);
+  if (smart) return data.channels.filter((ch) => matchesSmartCategory(ch, smart));
   return data.channels.filter((ch) => ch.category === state.category);
 }
 
 function countChannels(cat) {
   return cat === "All Channels" ? data.channels.length : data.channels.filter((ch) => ch.category === cat).length;
+}
+
+function matchesSmartCategory(channel, rule) {
+  const haystack = normalizeSearch(`${channel.name} ${channel.category} ${channel.program}`);
+  return rule.terms.some((term) => haystack.includes(normalizeSearch(term)));
 }
 
 function selectedChannel() {
@@ -674,7 +706,7 @@ function renderMovies() {
 
   let movies = state.movieCategory === "Featured" ? [...data.movies] : data.movies.filter((m) => m.category === state.movieCategory);
   movies.sort((a, b) => state.movieSortAsc ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title));
-  renderPosterGrid($("movieGrid"), movies, openMovieDetail);
+  renderPosterGrid($("movieGrid"), movies, openMovieDetail, gridLimit);
   renderMovieDetail();
 }
 
@@ -725,7 +757,8 @@ function renderSeries() {
   renderPosterGrid($("seriesGrid"), data.series, (item) => {
     state.selectedSeriesId = item.id;
     renderSeriesDetail();
-  });
+    loadSeriesEpisodes(item).catch(() => {});
+  }, gridLimit);
   renderSeriesDetail();
 }
 
@@ -792,9 +825,11 @@ async function loadSeriesEpisodes(show) {
   return show.seasonList;
 }
 
-function renderPosterGrid(container, items, handler) {
+function renderPosterGrid(container, items, handler, limit = Infinity) {
   container.innerHTML = "";
-  items.forEach((item) => {
+  const visibleItems = items.slice(0, limit);
+  const fragment = document.createDocumentFragment();
+  visibleItems.forEach((item) => {
     const card = document.createElement("button");
     card.type = "button";
     card.className = "poster-card focusable";
@@ -808,8 +843,15 @@ function renderPosterGrid(container, items, handler) {
       if (handler) handler(item);
       else playMedia(item);
     });
-    container.appendChild(card);
+    fragment.appendChild(card);
   });
+  container.appendChild(fragment);
+  if (items.length > visibleItems.length) {
+    const note = document.createElement("div");
+    note.className = "empty-state grid-note";
+    note.textContent = `Showing first ${visibleItems.length} of ${items.length}. Use Search to jump straight to a title.`;
+    container.appendChild(note);
+  }
 }
 
 function renderFavorites() {
