@@ -1001,3 +1001,45 @@ p {
     max-height: 340px;
   }
 }
+
+body.tv-app .tv-screen {
+  grid-template-columns: 170px minmax(0, 1fr);
+}
+
+body.tv-app .rail {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  overflow-x: hidden;
+}
+
+body.tv-app .rail-brand {
+  min-width: 0;
+}
+
+body.tv-app .nav-item {
+  min-width: 0;
+}
+
+body.tv-app .live-layout {
+  grid-template-columns: 210px 280px minmax(380px, 1fr);
+  gap: 14px;
+}
+
+body.tv-app .stack-list {
+  height: calc(100vh - 170px);
+  max-height: none;
+}
+
+body.tv-app .topbar {
+  padding: 18px 22px;
+}
+
+body.tv-app .main-pane {
+  padding: 18px;
+}
+
+body.tv-app .list-row {
+  min-height: 50px;
+}

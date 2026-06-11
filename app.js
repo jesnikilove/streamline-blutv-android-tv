@@ -116,6 +116,7 @@ function series(id, title, category, seasons, image) {
 const $ = (id) => document.getElementById(id);
 
 function init() {
+  document.body.classList.toggle("tv-app", isTvApp());
   const cache = localStorage.getItem("streamlineProviderCache");
   if (cache) {
     try {
@@ -147,6 +148,11 @@ function init() {
   } else {
     $("loginButton").focus();
   }
+}
+
+function isTvApp() {
+  return new URLSearchParams(window.location.search).get("tvApp") === "1"
+    || navigator.userAgent.includes("StreamlineBluTVApp");
 }
 
 async function restoreSavedProviderSession() {
@@ -545,6 +551,12 @@ async function toggleFullscreen() {
 }
 
 async function openPlayerFullscreen(showControls = false, forceVideo = false) {
+  if (isTvApp()) {
+    if (state.view !== "live") setView("live");
+    showPlayerControls(showControls);
+    syncFullscreenButton();
+    return;
+  }
   try {
     const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
     const target = $("videoFrame");
@@ -583,6 +595,10 @@ async function exitPlayerFullscreen() {
 }
 
 function syncFullscreenButton() {
+  if (isTvApp()) {
+    $("fullscreenButton").textContent = "Player";
+    return;
+  }
   const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
   $("fullscreenButton").textContent = fullscreenElement ? "Exit Player" : "Player Fullscreen";
   if (!fullscreenElement) showPlayerControls(false);
