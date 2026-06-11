@@ -222,6 +222,7 @@ function bindNavigation() {
 
   document.addEventListener("keydown", (event) => {
     if ($("homeScreen").classList.contains("hidden")) return;
+    if (isTypingField(document.activeElement)) return;
     if (event.key === "Backspace" || event.key === "Escape") {
       if (state.view !== "live") {
         event.preventDefault();
@@ -232,6 +233,10 @@ function bindNavigation() {
       document.activeElement.click();
     }
   });
+}
+
+function isTypingField(element) {
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(element?.tagName) || element?.isContentEditable;
 }
 
 function setView(view) {
@@ -779,12 +784,17 @@ function renderSearch() {
     return;
   }
   results.forEach((item) => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "search-row focusable";
-    row.innerHTML = `<span class="search-type">${item.type}</span><span><strong>${item.title}</strong><br><small>${item.subtitle}</small></span><span>Open</span>`;
-    row.addEventListener("click", () => openSearchResult(item));
-    box.appendChild(row);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "poster-card search-card focusable";
+    card.innerHTML = `
+      <div class="poster-art" style="background-image:url('${item.image}')">
+        <span class="search-badge">${item.type}</span>
+      </div>
+      <div class="poster-info"><strong>${item.title}</strong><span>${item.subtitle}</span></div>
+    `;
+    card.addEventListener("click", () => openSearchResult(item));
+    box.appendChild(card);
   });
 }
 
