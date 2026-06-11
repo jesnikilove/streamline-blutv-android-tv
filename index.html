@@ -33,8 +33,17 @@
           <label>Playlist URL<input class="focusable" id="playlistInput" value="https://provider.example.com/get.php?type=m3u_plus"></label>
         </div>
 
+        <div class="playlist-manager">
+          <label>Playlist Name<input class="focusable" id="playlistNameInput" value="My Playlist"></label>
+          <label>Saved Playlists<select class="focusable" id="playlistProfileSelect"></select></label>
+          <p class="login-status">Saved playlists stay on this device for the current app session.</p>
+        </div>
+
         <div class="login-actions">
           <button id="loginButton" class="primary-btn focusable" type="button">Continue</button>
+          <button id="savePlaylistButton" class="ghost-btn focusable" type="button">Save Playlist</button>
+          <button id="loadPlaylistButton" class="ghost-btn focusable" type="button">Load Playlist</button>
+          <button id="deletePlaylistButton" class="ghost-btn focusable" type="button">Delete</button>
           <button id="demoButton" class="ghost-btn focusable" type="button">Demo Library</button>
         </div>
         <p id="loginStatus" class="login-status"></p>
@@ -97,7 +106,6 @@
                     <button id="forwardButton" class="control-btn focusable" type="button">FF</button>
                     <button id="ccButton" class="control-btn focusable" type="button">CC Off</button>
                     <button id="wideButton" class="control-btn focusable" type="button">Wide</button>
-                    <button id="recordButton" class="control-btn focusable" type="button">Record</button>
                     <button id="exitFullscreenButton" class="control-btn focusable" type="button">Exit</button>
                   </div>
                   <input id="seekBar" class="seek-bar focusable" type="range" min="0" max="1000" value="0" aria-label="Playback position">

@@ -45,7 +45,6 @@ const state = {
   currentMedia: null,
   captionsOn: false,
   wideMode: false,
-  recording: null,
   controlsTimer: null,
   seekTimer: null
 };
@@ -134,6 +133,7 @@ function init() {
     }
   }
   bindLogin();
+  renderPlaylistProfiles();
   bindNavigation();
   bindActions();
   renderAll();
@@ -164,6 +164,9 @@ function bindLogin() {
     btn.addEventListener("click", () => setLoginMode(btn.dataset.loginMode));
   });
   $("loginButton").addEventListener("click", loginWithProvider);
+  $("savePlaylistButton").addEventListener("click", savePlaylistProfile);
+  $("loadPlaylistButton").addEventListener("click", loadSelectedPlaylistProfile);
+  $("deletePlaylistButton").addEventListener("click", deleteSelectedPlaylistProfile);
   $("demoButton").addEventListener("click", () => {
     localStorage.setItem("streamlineProviderName", "Demo Provider");
     localStorage.setItem("streamlineLoggedIn", "true");
@@ -179,6 +182,20 @@ function setLoginMode(mode) {
   $("m3uForm").classList.toggle("hidden", mode !== "m3u");
 }
 
+function getProviderPayload() {
+  return state.loginMode === "xtream"
+    ? {
+        mode: "xtream",
+        server: $("serverInput").value.trim(),
+        username: $("usernameInput").value.trim(),
+        password: $("passwordInput").value.trim()
+      }
+    : {
+        mode: "m3u",
+        playlistUrl: $("playlistInput").value.trim()
+      };
+}
+
 function saveLogin(payload) {
   const provider = payload
     ? payload.server || payload.playlistUrl
@@ -192,17 +209,7 @@ async function loginWithProvider() {
   setLoginStatus("Loading provider data...");
   $("loginButton").disabled = true;
   try {
-    const payload = state.loginMode === "xtream"
-      ? {
-          mode: "xtream",
-          server: $("serverInput").value.trim(),
-          username: $("usernameInput").value.trim(),
-          password: $("passwordInput").value.trim()
-        }
-      : {
-          mode: "m3u",
-          playlistUrl: $("playlistInput").value.trim()
-        };
+    const payload = getProviderPayload();
 
     sessionStorage.setItem("streamlineLastProviderPayload", JSON.stringify(payload));
     await loadProviderCatalog(payload);
@@ -212,6 +219,77 @@ async function loginWithProvider() {
     setLoginStatus(error.message || "Could not load provider.");
   } finally {
     $("loginButton").disabled = false;
+  }
+}
+
+function playlistProfiles() {
+  try {
+    return JSON.parse(sessionStorage.getItem("streamlinePlaylistProfiles") || "[]");
+  } catch (_error) {
+    return [];
+  }
+}
+
+function writePlaylistProfiles(profiles) {
+  sessionStorage.setItem("streamlinePlaylistProfiles", JSON.stringify(profiles));
+  renderPlaylistProfiles();
+}
+
+function renderPlaylistProfiles() {
+  const select = $("playlistProfileSelect");
+  if (!select) return;
+  const profiles = playlistProfiles();
+  select.innerHTML = profiles.length
+    ? profiles.map((profile, index) => `<option value="${index}">${profile.name}</option>`).join("")
+    : `<option value="">No saved playlists</option>`;
+}
+
+function savePlaylistProfile() {
+  const payload = getProviderPayload();
+  const name = $("playlistNameInput").value.trim() || payload.server || payload.playlistUrl || "Playlist";
+  const profiles = playlistProfiles();
+  const existingIndex = profiles.findIndex((profile) => profile.name.toLowerCase() === name.toLowerCase());
+  const profile = { name, payload, updatedAt: Date.now() };
+  if (existingIndex >= 0) profiles[existingIndex] = profile;
+  else profiles.push(profile);
+  writePlaylistProfiles(profiles);
+  $("playlistProfileSelect").value = String(existingIndex >= 0 ? existingIndex : profiles.length - 1);
+  setLoginStatus(`Added ${name} for this session.`);
+}
+
+function loadSelectedPlaylistProfile() {
+  const profiles = playlistProfiles();
+  const profile = profiles[Number($("playlistProfileSelect").value)];
+  if (!profile) {
+    setLoginStatus("No playlist selected.");
+    return;
+  }
+  applyPlaylistProfile(profile);
+  setLoginStatus(`Loaded ${profile.name}. Press Continue to watch.`);
+}
+
+function deleteSelectedPlaylistProfile() {
+  const profiles = playlistProfiles();
+  const index = Number($("playlistProfileSelect").value);
+  if (!profiles[index]) {
+    setLoginStatus("No playlist selected.");
+    return;
+  }
+  const [removed] = profiles.splice(index, 1);
+  writePlaylistProfiles(profiles);
+  setLoginStatus(`Removed ${removed.name}.`);
+}
+
+function applyPlaylistProfile(profile) {
+  const payload = profile.payload || {};
+  $("playlistNameInput").value = profile.name || "My Playlist";
+  setLoginMode(payload.mode || "xtream");
+  if (payload.mode === "m3u") {
+    $("playlistInput").value = payload.playlistUrl || "";
+  } else {
+    $("serverInput").value = payload.server || "";
+    $("usernameInput").value = payload.username || "";
+    $("passwordInput").value = payload.password || "";
   }
 }
 
@@ -401,7 +479,6 @@ function bindActions() {
   $("seekBar").addEventListener("input", scrubPlayer);
   $("ccButton").addEventListener("click", toggleCaptions);
   $("wideButton").addEventListener("click", toggleWideMode);
-  $("recordButton").addEventListener("click", toggleRecording);
   $("exitFullscreenButton").addEventListener("click", exitPlayerFullscreen);
   document.addEventListener("fullscreenchange", syncFullscreenButton);
   document.addEventListener("webkitfullscreenchange", syncFullscreenButton);
@@ -501,8 +578,8 @@ function updatePlayerOptionStates() {
   $("rewindButton").disabled = !seekable;
   $("forwardButton").disabled = !seekable;
   $("seekBar").disabled = !seekable;
-  $("recordButton").disabled = !canRecordPlayer();
   $("ccButton").classList.toggle("disabled", !hasCaptionTracks());
+  $("ccButton").textContent = hasCaptionTracks() ? (state.captionsOn ? "CC On" : "CC Off") : "No CC";
 }
 
 function togglePlayerPlayback() {
@@ -590,49 +667,6 @@ function toggleWideMode() {
   state.wideMode = !state.wideMode;
   $("videoFrame").classList.toggle("wide-mode", state.wideMode);
   $("wideButton").textContent = state.wideMode ? "Fit" : "Wide";
-}
-
-function toggleRecording() {
-  const player = $("videoPlayer");
-  if (state.recording) {
-    state.recording.stop();
-    state.recording = null;
-    $("recordButton").textContent = "Record";
-    toast("Recording stopped");
-    return;
-  }
-  if (!canRecordPlayer()) {
-    toast("Recording is not available in this browser.");
-    return;
-  }
-  try {
-    const chunks = [];
-    const stream = player.captureStream();
-    const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((type) => MediaRecorder.isTypeSupported?.(type));
-    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) chunks.push(event.data);
-    };
-    recorder.onstop = () => {
-      const url = URL.createObjectURL(new Blob(chunks, { type: recorder.mimeType || "video/webm" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "streamline-recording.webm";
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    };
-    recorder.start();
-    state.recording = recorder;
-    $("recordButton").textContent = "Stop";
-    toast("Recording started");
-  } catch (_error) {
-    toast("Recording is blocked for this stream.");
-  }
-}
-
-function canRecordPlayer() {
-  const player = $("videoPlayer");
-  return !!(player.captureStream && typeof MediaRecorder !== "undefined" && !player.paused && player.readyState >= 2);
 }
 
 function renderAll() {
@@ -780,8 +814,7 @@ async function playChannel(ch, showToast) {
       $("playState").textContent = "Playing";
       showPlayerControls(false);
     }).catch(() => {
-      $("playState").textContent = "Ready";
-      showPlayerControls(true);
+      showVideoError(`${ch.name} could not start.`);
     });
   }
 }
@@ -867,11 +900,14 @@ function showVideoError(message) {
   $("playState").textContent = "Unavailable";
   player.removeAttribute("src");
   player.load();
+  $("videoOverlay").classList.add("visible");
+  showPlayerControls(false);
   toast(message);
 }
 
 function clearVideoError() {
   $("playState").textContent = "Loading";
+  $("videoOverlay").classList.remove("visible");
 }
 
 function isHlsUrl(url) {
@@ -972,8 +1008,8 @@ async function openChannelFromGuide(ch) {
   state.selectedChannelId = ch.id;
   setView("live");
   renderSelectedChannel();
+  await openPlayerFullscreen(false, true);
   await playChannel(ch, false);
-  setTimeout(() => openPlayerFullscreen(false, true), 80);
 }
 
 function renderMovies() {

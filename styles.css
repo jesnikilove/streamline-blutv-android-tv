@@ -178,7 +178,8 @@ label {
   font-size: 14px;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 48px;
   padding: 0 14px;
@@ -189,8 +190,21 @@ input {
   outline: none;
 }
 
+.playlist-manager {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.playlist-manager .login-status {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
 .login-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 20px;
 }
@@ -509,9 +523,17 @@ p {
   display: none;
 }
 
-.video-frame:fullscreen .video-overlay,
-.video-frame:-webkit-full-screen .video-overlay {
-  display: none;
+.video-overlay.visible {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: #000;
+  color: var(--text);
+  font-size: 28px;
+  font-weight: 800;
+  text-align: center;
 }
 
 .player-controls {
