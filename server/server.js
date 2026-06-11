@@ -55,6 +55,9 @@ http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url.startsWith("/api/stream-proxy")) {
       return proxyStreamAsset(req, res);
     }
+    if (req.method === "GET" && req.url.startsWith("/api/transcode-live/")) {
+      return transcodeLive(req, res);
+    }
     if (req.method === "GET" && req.url.startsWith("/api/transcode-movie")) {
       return transcodeMovie(req, res);
     }
@@ -326,7 +329,12 @@ async function transcodeMovie(req, res) {
   if (audioMap) args.push("-map", audioMap);
   else args.push("-an");
   args.push(
-    "-c:v", "copy",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-tune", "zerolatency",
+    "-pix_fmt", "yuv420p",
+    "-profile:v", "baseline",
+    "-level", "3.1",
     "-c:a", "aac",
     "-b:a", "160k",
     "-metadata:s:a:0", "language=eng",
@@ -347,6 +355,50 @@ async function transcodeMovie(req, res) {
   });
   ffmpeg.on("error", () => {
     if (!res.headersSent) sendJson(res, 500, { ok: false, message: "Movie audio conversion failed." });
+    else res.end();
+  });
+}
+
+async function transcodeLive(req, res) {
+  if (!providerSession.base) throw new Error("Load your provider before playing live TV.");
+  const requestUrl = new URL(req.url, `http://${host}:${port}`);
+  const match = requestUrl.pathname.match(/^\/api\/transcode-live\/([^/]+)\.mp4$/);
+  if (!match) throw new Error("Missing stream id.");
+  const streamId = decodeURIComponent(match[1]);
+  const { base, username, password } = providerSession;
+  const liveUrl = `${base}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.m3u8`;
+
+  const args = [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-fflags", "+genpts",
+    "-i", liveUrl,
+    "-map", "0:v:0?",
+    "-map", "0:a:0?",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-tune", "zerolatency",
+    "-pix_fmt", "yuv420p",
+    "-profile:v", "baseline",
+    "-level", "3.1",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+    "-f", "mp4",
+    "pipe:1"
+  ];
+
+  const ffmpeg = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+  res.writeHead(200, {
+    "Content-Type": "video/mp4",
+    "Cache-Control": "no-store"
+  });
+  ffmpeg.stdout.pipe(res);
+  req.on("close", () => {
+    if (!ffmpeg.killed) ffmpeg.kill("SIGKILL");
+  });
+  ffmpeg.on("error", () => {
+    if (!res.headersSent) sendJson(res, 500, { ok: false, message: "Live video conversion failed." });
     else res.end();
   });
 }

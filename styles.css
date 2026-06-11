@@ -1286,15 +1286,10 @@ body.tv-app .video-frame {
   overflow: hidden;
   border: 1px solid rgba(var(--section-rgb), 0.42);
   border-radius: var(--radius);
-  contain: paint;
-  transform: translateZ(0);
 }
 
 body.tv-app .video-frame video {
   display: block;
-  backface-visibility: hidden;
-  transform: translateZ(0);
-  will-change: transform;
 }
 
 body.tv-app .now-card {

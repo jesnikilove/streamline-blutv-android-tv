@@ -741,11 +741,13 @@ function handleAppBack() {
 }
 
 function handlePlayerKeys(event) {
-  const watching = state.currentMedia?.type === "Channel" || document.fullscreenElement || document.webkitFullscreenElement;
+  const playerOpen = document.body.classList.contains("tv-player-open") || document.fullscreenElement || document.webkitFullscreenElement;
+  const watching = state.currentMedia?.type === "Channel" || playerOpen;
   if (!watching) return false;
   const playerFocused = $("videoFrame").contains(document.activeElement) || $("playerControls").contains(document.activeElement);
   if (isTvApp() && !playerFocused) return false;
   if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    if (!playerOpen || state.currentMedia?.type !== "Channel") return false;
     event.preventDefault();
     surfChannel(event.key === "ArrowUp" ? -1 : 1);
     return true;
@@ -1415,7 +1417,7 @@ async function playChannel(ch, showToast, options = {}) {
     clearVideoError();
     $("playState").textContent = preview ? "Preview" : "Playing";
   }, { once: true });
-  await loadVideoSource(player, ch.streamUrl);
+  await loadVideoSource(player, playableChannelSource(ch));
   player.onerror = () => {
     if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} is not available right now.`);
   };
@@ -1465,11 +1467,17 @@ async function playMedia(item, showToast = true) {
 
 function playableMediaSource(item) {
   const url = item.streamUrl || videoUrl;
-  const source = `${item.container || ""} ${url}`.toLowerCase();
-  if (source.includes(".mkv") || source.includes("mkv")) {
-    return `/api/transcode-movie?url=${encodeURIComponent(url)}`;
-  }
-  return url;
+  if (!isProviderLocalUrl(url)) return url;
+  return `/api/transcode-movie?url=${encodeURIComponent(url)}`;
+}
+
+function playableChannelSource(ch) {
+  if (isTvApp() && ch?.streamId) return `/api/transcode-live/${encodeURIComponent(ch.streamId)}.mp4`;
+  return ch?.streamUrl || "";
+}
+
+function isProviderLocalUrl(url) {
+  return /^https?:\/\//i.test(String(url || ""));
 }
 
 function loadVideoSource(player, source) {
