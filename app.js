@@ -150,7 +150,7 @@ function init() {
 }
 
 async function restoreSavedProviderSession() {
-  const payloadText = sessionStorage.getItem("streamlineLastProviderPayload");
+  const payloadText = sessionStorage.getItem("streamlineLastProviderPayload") || localStorage.getItem("streamlineRememberedProviderPayload");
   if (!payloadText || !state.usingProviderData) return;
   try {
     await loadProviderCatalog(JSON.parse(payloadText));
@@ -164,6 +164,7 @@ function bindLogin() {
   document.querySelectorAll("[data-login-mode]").forEach((btn) => {
     btn.addEventListener("click", () => setLoginMode(btn.dataset.loginMode));
   });
+  restoreRememberedLoginForm();
   $("loginButton").addEventListener("click", loginWithProvider);
   $("savePlaylistButton").addEventListener("click", savePlaylistProfile);
   $("loadPlaylistButton").addEventListener("click", loadSelectedPlaylistProfile);
@@ -204,6 +205,17 @@ function saveLogin(payload) {
   localStorage.setItem("streamlineProviderName", provider || "Demo Provider");
   localStorage.setItem("streamlineLoginMode", payload?.mode || state.loginMode);
   localStorage.setItem("streamlineLoggedIn", "true");
+  if (payload) localStorage.setItem("streamlineRememberedProviderPayload", JSON.stringify(payload));
+}
+
+function restoreRememberedLoginForm() {
+  const payloadText = localStorage.getItem("streamlineRememberedProviderPayload");
+  if (!payloadText) return;
+  try {
+    applyPlaylistProfile({ name: "Remembered Login", payload: JSON.parse(payloadText) });
+  } catch (_error) {
+    localStorage.removeItem("streamlineRememberedProviderPayload");
+  }
 }
 
 async function loginWithProvider() {
@@ -520,9 +532,10 @@ function bindActions() {
   $("clearCache").addEventListener("click", () => {
     localStorage.removeItem("streamlineFavorites");
     localStorage.removeItem("streamlineProviderCache");
+    localStorage.removeItem("streamlineRememberedProviderPayload");
     state.favorites = new Set();
     renderAll();
-    toast("Demo cache cleared");
+    toast("Local cache cleared");
   });
   updateCacheInfo();
 }
