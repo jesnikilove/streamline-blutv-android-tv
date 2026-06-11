@@ -1034,15 +1034,22 @@ body.tv-app {
 }
 
 body.tv-app .login-screen {
-  min-height: 100vh;
-  grid-template-columns: 128px minmax(0, 1fr);
-  gap: 14px;
-  align-items: center;
-  padding: 14px;
+  height: 100vh;
+  min-height: 0;
+  grid-template-columns: 112px minmax(0, 620px);
+  justify-content: center;
+  gap: 12px;
+  align-items: stretch;
+  padding: 10px;
+  overflow: hidden;
 }
 
 body.tv-app .login-card {
-  max-width: 820px;
+  align-self: center;
+  max-width: 620px;
+  max-height: calc(100vh - 20px);
+  padding: 14px;
+  overflow: auto;
 }
 
 body.tv-app .brand-panel {
@@ -1050,24 +1057,75 @@ body.tv-app .brand-panel {
   flex-direction: column;
   justify-content: flex-start;
   align-items: flex-start;
-  gap: 14px;
-  padding: 22px 14px;
+  gap: 10px;
+  padding: 14px 10px;
   border-right: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(20, 16, 48, 0.94), rgba(9, 8, 21, 0.92));
 }
 
 body.tv-app .brand-panel h1 {
-  font-size: 28px;
+  font-size: 22px;
+  line-height: 1.05;
 }
 
 body.tv-app .brand-panel p {
-  font-size: 14px;
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 body.tv-app .brand-panel .brand-mark {
-  width: 56px;
-  height: 56px;
-  font-size: 18px;
+  width: 44px;
+  height: 44px;
+  font-size: 15px;
+}
+
+body.tv-app .login-card .segmented {
+  margin-bottom: 10px;
+}
+
+body.tv-app .login-card .compact-form {
+  gap: 10px;
+}
+
+body.tv-app .login-card label {
+  font-size: 11px;
+}
+
+body.tv-app .login-card input,
+body.tv-app .login-card select {
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+body.tv-app .login-card .primary-btn,
+body.tv-app .login-card .ghost-btn,
+body.tv-app .login-card .segment {
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+body.tv-app .login-card .login-actions {
+  gap: 8px;
+  margin-top: 10px;
+}
+
+body.tv-app .login-card .playlist-manager .login-status {
+  display: none;
+}
+
+body.tv-app .login-card #loginStatus {
+  position: sticky;
+  bottom: 0;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--section-rgb), 0.34);
+  border-radius: 999px;
+  background: rgba(9, 8, 21, 0.92);
+  color: var(--white);
+  font-size: 12px;
+  min-height: 34px;
 }
 
 body.tv-app .rail {
