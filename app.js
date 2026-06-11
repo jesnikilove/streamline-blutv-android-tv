@@ -6,10 +6,15 @@ const state = {
   category: "All Channels",
   selectedChannelId: "ch-1",
   movieCategory: "Featured",
+  selectedMovieId: "mov-1",
   selectedSeriesId: "ser-1",
   favorites: new Set(JSON.parse(localStorage.getItem("streamlineFavorites") || "[]")),
   movieSortAsc: true,
-  usingProviderData: false
+  usingProviderData: false,
+  currentMedia: null,
+  captionsOn: false,
+  wideMode: false,
+  recording: null
 };
 
 let data = {
@@ -87,6 +92,7 @@ function init() {
       state.category = data.categories[0] || state.category;
       state.selectedChannelId = data.channels[0]?.id || state.selectedChannelId;
       state.movieCategory = data.movieTabs[0] || state.movieCategory;
+      state.selectedMovieId = data.movies[0]?.id || state.selectedMovieId;
       state.selectedSeriesId = data.series[0]?.id || state.selectedSeriesId;
     } catch (_error) {
       localStorage.removeItem("streamlineProviderCache");
@@ -126,10 +132,12 @@ function setLoginMode(mode) {
   $("m3uForm").classList.toggle("hidden", mode !== "m3u");
 }
 
-function saveLogin() {
-  const provider = state.loginMode === "xtream" ? $("serverInput").value.trim() : $("playlistInput").value.trim();
+function saveLogin(payload) {
+  const provider = payload
+    ? payload.server || payload.playlistUrl
+    : state.loginMode === "xtream" ? $("serverInput").value.trim() : $("playlistInput").value.trim();
   localStorage.setItem("streamlineProviderName", provider || "Demo Provider");
-  localStorage.setItem("streamlineLoginMode", state.loginMode);
+  localStorage.setItem("streamlineLoginMode", payload?.mode || state.loginMode);
   localStorage.setItem("streamlineLoggedIn", "true");
 }
 
@@ -149,28 +157,45 @@ async function loginWithProvider() {
           playlistUrl: $("playlistInput").value.trim()
         };
 
-    const response = await fetch("/api/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const parsed = await response.json();
-    if (!response.ok || !parsed.ok) throw new Error(parsed.message || "Provider login failed.");
-
-    data = parsed.data;
-    state.usingProviderData = true;
-    state.category = data.categories[0] || "All Channels";
-    state.selectedChannelId = data.channels[0]?.id || "";
-    state.movieCategory = data.movieTabs[0] || "Featured";
-    state.selectedSeriesId = data.series[0]?.id || "";
-    saveLogin();
-    localStorage.setItem("streamlineProviderCache", JSON.stringify(parsed.data));
+    sessionStorage.setItem("streamlineLastProviderPayload", JSON.stringify(payload));
+    await loadProviderCatalog(payload);
     setLoginStatus("Provider loaded.");
     showHome();
   } catch (error) {
     setLoginStatus(error.message || "Could not load provider.");
   } finally {
     $("loginButton").disabled = false;
+  }
+}
+
+async function loadProviderCatalog(payload) {
+  const response = await fetch("/api/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+  });
+  const parsed = await response.json();
+  if (!response.ok || !parsed.ok) throw new Error(parsed.message || "Provider login failed.");
+
+  data = parsed.data;
+  state.usingProviderData = true;
+  state.category = data.categories[0] || "All Channels";
+  state.selectedChannelId = data.channels[0]?.id || "";
+  state.movieCategory = data.movieTabs[0] || "Featured";
+  state.selectedMovieId = data.movies[0]?.id || "";
+  state.selectedSeriesId = data.series[0]?.id || "";
+  saveLogin(payload);
+  persistProviderCache(parsed.data);
+  updateCacheInfo();
+  return parsed.data;
+}
+
+function persistProviderCache(library) {
+  try {
+    localStorage.setItem("streamlineProviderCache", JSON.stringify(library));
+  } catch (_error) {
+    localStorage.removeItem("streamlineProviderCache");
+    toast("Full catalog loaded for this session. Cache was too large to save.");
   }
 }
 
@@ -184,6 +209,7 @@ function showHome() {
   $("homeScreen").classList.remove("hidden");
   $("providerText").textContent = localStorage.getItem("streamlineProviderName") || "Demo Provider";
   $("settingsProvider").textContent = $("providerText").textContent;
+  updateCacheInfo();
   renderLive();
   playSelectedChannel(false);
   document.querySelector(".nav-item.active").focus();
@@ -256,6 +282,11 @@ function titleForView(view) {
 function bindActions() {
   $("favoriteButton").addEventListener("click", toggleSelectedFavorite);
   $("fullscreenButton").addEventListener("click", toggleFullscreen);
+  $("playerPlayPause").addEventListener("click", togglePlayerPlayback);
+  $("ccButton").addEventListener("click", toggleCaptions);
+  $("wideButton").addEventListener("click", toggleWideMode);
+  $("recordButton").addEventListener("click", toggleRecording);
+  $("exitFullscreenButton").addEventListener("click", exitPlayerFullscreen);
   document.addEventListener("fullscreenchange", syncFullscreenButton);
   document.addEventListener("webkitfullscreenchange", syncFullscreenButton);
   $("sortMovies").addEventListener("click", () => {
@@ -270,6 +301,7 @@ function bindActions() {
     $("loginScreen").classList.remove("hidden");
     $("loginButton").focus();
   });
+  $("reloadProvider").addEventListener("click", reloadProviderCatalog);
   $("clearCache").addEventListener("click", () => {
     localStorage.removeItem("streamlineFavorites");
     localStorage.removeItem("streamlineProviderCache");
@@ -277,13 +309,15 @@ function bindActions() {
     renderAll();
     toast("Demo cache cleared");
   });
+  updateCacheInfo();
 }
 
 async function toggleFullscreen() {
-  await openPlayerFullscreen();
+  if (state.view !== "live") setView("live");
+  await openPlayerFullscreen(true);
 }
 
-async function openPlayerFullscreen() {
+async function openPlayerFullscreen(showControls = false) {
   try {
     const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
     if (!fullscreenElement) {
@@ -295,22 +329,100 @@ async function openPlayerFullscreen() {
       } else {
         throw new Error("Fullscreen unsupported");
       }
-    } else {
-      if (document.exitFullscreen) {
-        await document.exitFullscreen();
-      } else if (document.webkitExitFullscreen) {
-        document.webkitExitFullscreen();
+      if (showControls) {
+        $("videoPlayer").pause();
+        showPlayerControls(true);
       }
+    } else {
+      await exitPlayerFullscreen();
     }
     syncFullscreenButton();
   } catch (_error) {
-    toast("Fullscreen is blocked by this browser.");
+    $("videoPlayer").pause();
+    showPlayerControls(true);
+    toast("Fullscreen is blocked by this browser. Player controls are open.");
   }
+}
+
+async function exitPlayerFullscreen() {
+  if (document.fullscreenElement && document.exitFullscreen) {
+    await document.exitFullscreen();
+  } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
+    document.webkitExitFullscreen();
+  }
+  showPlayerControls(false);
 }
 
 function syncFullscreenButton() {
   const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
   $("fullscreenButton").textContent = fullscreenElement ? "Exit Player" : "Player Fullscreen";
+  if (!fullscreenElement) showPlayerControls(false);
+}
+
+function showPlayerControls(show) {
+  $("playerControls").classList.toggle("hidden", !show);
+  $("videoFrame").classList.toggle("controls-open", show);
+  $("controlMediaTitle").textContent = state.currentMedia?.title || $("nowTitle").textContent || "Paused";
+  $("playerPlayPause").textContent = $("videoPlayer").paused ? "Play" : "Pause";
+  if (show) $("playerPlayPause").focus();
+}
+
+function togglePlayerPlayback() {
+  const player = $("videoPlayer");
+  if (player.paused) {
+    player.play().then(() => showPlayerControls(true)).catch(() => toast("Playback is blocked by this browser."));
+  } else {
+    player.pause();
+    showPlayerControls(true);
+  }
+}
+
+function toggleCaptions() {
+  state.captionsOn = !state.captionsOn;
+  $("ccButton").textContent = state.captionsOn ? "CC On" : "CC Off";
+  toast(state.captionsOn ? "Captions requested" : "Captions off");
+}
+
+function toggleWideMode() {
+  state.wideMode = !state.wideMode;
+  $("videoFrame").classList.toggle("wide-mode", state.wideMode);
+  $("wideButton").textContent = state.wideMode ? "Fit" : "Wide";
+}
+
+function toggleRecording() {
+  const player = $("videoPlayer");
+  if (state.recording) {
+    state.recording.stop();
+    state.recording = null;
+    $("recordButton").textContent = "Record";
+    toast("Recording stopped");
+    return;
+  }
+  if (!player.captureStream || typeof MediaRecorder === "undefined") {
+    toast("Recording is not available in this browser.");
+    return;
+  }
+  try {
+    const chunks = [];
+    const recorder = new MediaRecorder(player.captureStream());
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) chunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      const url = URL.createObjectURL(new Blob(chunks, { type: recorder.mimeType || "video/webm" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "streamline-recording.webm";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    recorder.start();
+    state.recording = recorder;
+    $("recordButton").textContent = "Stop";
+    toast("Recording started");
+  } catch (_error) {
+    toast("Recording is blocked for this stream.");
+  }
 }
 
 function renderAll() {
@@ -374,6 +486,7 @@ function selectedChannel() {
 
 function renderSelectedChannel() {
   const ch = selectedChannel();
+  if (!ch) return;
   $("nowCategory").textContent = ch.category;
   $("nowTitle").textContent = ch.name;
   $("nowDesc").textContent = `${ch.program}. ${ch.description}`;
@@ -390,7 +503,11 @@ function renderSelectedChannel() {
 
 function playSelectedChannel(showToast) {
   const ch = selectedChannel();
+  if (!ch) return;
+  state.currentMedia = { id: ch.id, title: ch.name, type: "Channel" };
   const player = $("videoPlayer");
+  player.muted = false;
+  player.volume = 1;
   player.poster = ch.image;
   player.src = ch.streamUrl || videoUrl;
   player.onerror = () => {
@@ -410,12 +527,15 @@ function playSelectedChannel(showToast) {
 
 function playMedia(item, showToast = true) {
   const title = item.title || item.name || "Selected title";
+  state.currentMedia = { ...item, title };
   $("nowCategory").textContent = item.category || item.type || "Now Playing";
   $("nowTitle").textContent = title;
   $("nowDesc").textContent = item.description || item.program || `${item.type || "Video"} playback`;
   $("favoriteButton").textContent = isFavorite(item.id) ? "Unfavorite" : "Favorite";
 
   const player = $("videoPlayer");
+  player.muted = false;
+  player.volume = 1;
   player.poster = item.image || "";
   player.src = item.streamUrl || videoUrl;
   player.onerror = () => {
@@ -430,7 +550,6 @@ function playMedia(item, showToast = true) {
   });
   setView("live");
   if (showToast) toast(`Opening ${title}`);
-  setTimeout(() => openPlayerFullscreen(), 80);
 }
 
 function toggleSelectedFavorite() {
@@ -485,7 +604,46 @@ function renderMovies() {
 
   let movies = state.movieCategory === "Featured" ? [...data.movies] : data.movies.filter((m) => m.category === state.movieCategory);
   movies.sort((a, b) => state.movieSortAsc ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title));
-  renderPosterGrid($("movieGrid"), movies, playMedia);
+  renderPosterGrid($("movieGrid"), movies, openMovieDetail);
+  renderMovieDetail();
+}
+
+function openMovieDetail(movie) {
+  state.selectedMovieId = movie.id;
+  setView("movies");
+  renderMovieDetail();
+  $("movieDetail").scrollIntoView({ behavior: "smooth", block: "start" });
+  const playButton = $("moviePlayButton");
+  if (playButton) playButton.focus();
+}
+
+function renderMovieDetail() {
+  const movie = data.movies.find((item) => item.id === state.selectedMovieId);
+  const panel = $("movieDetail");
+  if (!movie) {
+    panel.classList.add("hidden");
+    panel.innerHTML = "";
+    return;
+  }
+  panel.classList.remove("hidden");
+  panel.innerHTML = `
+    <div class="movie-backdrop" style="background-image:url('${movie.image}')"></div>
+    <div class="movie-copy">
+      <p class="kicker">${movie.category || "Movie"} ${movie.year || ""}</p>
+      <h3>${movie.title}</h3>
+      <p>${movie.description || "Movie details from the provider library."}</p>
+      <div class="movie-actions">
+        <button id="moviePlayButton" class="primary-btn focusable" type="button">Play Movie</button>
+        <button id="movieFavoriteButton" class="ghost-btn focusable" type="button">${isFavorite(movie.id) ? "Unfavorite" : "Favorite"}</button>
+      </div>
+    </div>
+  `;
+  $("moviePlayButton").addEventListener("click", () => playMedia(movie));
+  $("movieFavoriteButton").addEventListener("click", () => {
+    toggleFavorite(movie.id);
+    renderMovieDetail();
+    renderFavorites();
+  });
 }
 
 function renderSeries() {
@@ -613,7 +771,7 @@ function renderSearch() {
   const results = (q ? everything.filter((item) => {
     const haystack = normalizeSearch(`${item.title} ${item.subtitle} ${item.type}`);
     return terms.every((term) => haystack.includes(term));
-  }) : everything).slice(0, 24);
+  }) : everything).slice(0, 80);
   const box = $("searchResults");
   box.innerHTML = "";
   if (results.length === 0) {
@@ -640,7 +798,7 @@ function openSearchResult(result) {
     return;
   }
   if (result.type === "Movie") {
-    playMedia(result.item);
+    openMovieDetail(result.item);
     return;
   }
   if (result.type === "Series") {
@@ -649,6 +807,33 @@ function openSearchResult(result) {
     renderSeriesDetail();
     toast(`Opening ${result.item.title}`);
   }
+}
+
+async function reloadProviderCatalog() {
+  const payloadText = sessionStorage.getItem("streamlineLastProviderPayload");
+  if (!payloadText) {
+    toast("Use Change Login once, then reload the catalog.");
+    return;
+  }
+  const button = $("reloadProvider");
+  button.disabled = true;
+  button.textContent = "Loading Catalog";
+  try {
+    await loadProviderCatalog(JSON.parse(payloadText));
+    renderAll();
+    toast(`Loaded ${data.movies.length} movies and ${data.series.length} series`);
+  } catch (error) {
+    toast(error.message || "Catalog reload failed.");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Reload Provider Catalog";
+  }
+}
+
+function updateCacheInfo() {
+  const info = $("cacheInfo");
+  if (!info) return;
+  info.textContent = `${data.channels.length} channels, ${data.movies.length} movies, ${data.series.length} series loaded.`;
 }
 
 function normalizeSearch(value) {

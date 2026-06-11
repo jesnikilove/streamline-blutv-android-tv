@@ -5,9 +5,9 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const port = Number(process.env.PORT || 4188);
 const host = process.env.HOST || "127.0.0.1";
-const liveLimit = Number(process.env.LIVE_LIMIT || 2500);
-const vodLimit = Number(process.env.VOD_LIMIT || 5000);
-const seriesLimit = Number(process.env.SERIES_LIMIT || 5000);
+const liveLimit = readLimit(process.env.LIVE_LIMIT);
+const vodLimit = readLimit(process.env.VOD_LIMIT);
+const seriesLimit = readLimit(process.env.SERIES_LIMIT);
 let providerSession = invalidSession();
 
 const mime = {
@@ -96,7 +96,7 @@ async function loadXtream({ server, username, password }) {
 
   const liveMap = mapCategories(liveCats);
   const vodMap = mapCategories(vodCats);
-  const channels = asArray(liveStreams).slice(0, liveLimit).map((item, index) => ({
+  const channels = applyLimit(asArray(liveStreams), liveLimit).map((item, index) => ({
     id: `live-${item.stream_id || index}`,
     name: text(item.name, `Channel ${index + 1}`),
     category: liveMap[item.category_id] || "Live TV",
@@ -107,7 +107,7 @@ async function loadXtream({ server, username, password }) {
     guide: demoGuide("Live now")
   }));
 
-  const movies = asArray(vodStreams).slice(0, vodLimit).map((item, index) => ({
+  const movies = applyLimit(asArray(vodStreams), vodLimit).map((item, index) => ({
     id: `movie-${item.stream_id || index}`,
     title: text(item.name, `Movie ${index + 1}`),
     category: vodMap[item.category_id] || "VOD",
@@ -117,7 +117,7 @@ async function loadXtream({ server, username, password }) {
     streamUrl: `${base}/movie/${username}/${password}/${item.stream_id}.${item.container_extension || "mp4"}`
   }));
 
-  const series = asArray(seriesStreams).slice(0, seriesLimit).map((item, index) => ({
+  const series = applyLimit(asArray(seriesStreams), seriesLimit).map((item, index) => ({
     id: `series-${item.series_id || index}`,
     seriesId: item.series_id,
     title: text(item.name, `Series ${index + 1}`),
@@ -200,7 +200,16 @@ function parseM3u(body) {
     }
   }
   if (!channels.length) throw new Error("No channels found in this M3U playlist.");
-  return channels.slice(0, 2000);
+  return channels;
+}
+
+function readLimit(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function applyLimit(items, limit) {
+  return limit > 0 ? items.slice(0, limit) : items;
 }
 
 async function fetchJson(url) {

@@ -82,9 +82,22 @@
 
             <div class="player-panel">
               <div id="videoFrame" class="video-frame">
-                <video id="videoPlayer" playsinline muted loop poster="https://images.unsplash.com/photo-1593789198777-f29bc259780e?auto=format&fit=crop&w=1200&q=80"></video>
+                <video id="videoPlayer" playsinline loop poster="https://images.unsplash.com/photo-1593789198777-f29bc259780e?auto=format&fit=crop&w=1200&q=80"></video>
                 <div id="videoOverlay" class="video-overlay">
                   <span id="playState">Ready</span>
+                </div>
+                <div id="playerControls" class="player-controls hidden">
+                  <div>
+                    <p id="controlTitle" class="kicker">Player</p>
+                    <h3 id="controlMediaTitle">Paused</h3>
+                  </div>
+                  <div class="control-row">
+                    <button id="playerPlayPause" class="control-btn focusable" type="button">Play</button>
+                    <button id="ccButton" class="control-btn focusable" type="button">CC Off</button>
+                    <button id="wideButton" class="control-btn focusable" type="button">Wide</button>
+                    <button id="recordButton" class="control-btn focusable" type="button">Record</button>
+                    <button id="exitFullscreenButton" class="control-btn focusable" type="button">Exit</button>
+                  </div>
                 </div>
               </div>
               <div class="now-card">
@@ -109,6 +122,7 @@
         </section>
 
         <section id="viewMovies" class="view">
+          <div id="movieDetail" class="movie-detail hidden"></div>
           <div class="content-toolbar">
             <div id="movieTabs" class="chip-row"></div>
             <button id="sortMovies" class="ghost-btn focusable compact" type="button">A-Z</button>
@@ -153,6 +167,7 @@
             <div class="settings-card">
               <h3>Cache</h3>
               <p id="cacheInfo">VOD and guide cache ready.</p>
+              <button id="reloadProvider" class="primary-btn focusable" type="button">Reload Provider Catalog</button>
               <button id="clearCache" class="ghost-btn focusable" type="button">Clear Demo Cache</button>
             </div>
             <div class="settings-card">
