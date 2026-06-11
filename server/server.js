@@ -35,6 +35,11 @@ http.createServer(async (req, res) => {
       const result = await loadSeriesInfo(body.seriesId);
       return sendJson(res, 200, { ok: true, data: result });
     }
+    if (req.method === "POST" && req.url === "/api/channel-epg") {
+      const body = await readJson(req);
+      const result = await loadChannelEpg(body.streamId, body.streamUrl);
+      return sendJson(res, 200, { ok: true, data: result });
+    }
     return serveFile(req, res);
   } catch (error) {
     return sendJson(res, 400, { ok: false, message: error.message || "Request failed." });
@@ -98,6 +103,7 @@ async function loadXtream({ server, username, password }) {
   const vodMap = mapCategories(vodCats);
   const channels = applyLimit(asArray(liveStreams), liveLimit).map((item, index) => ({
     id: `live-${item.stream_id || index}`,
+    streamId: item.stream_id,
     name: text(item.name, `Channel ${index + 1}`),
     category: liveMap[item.category_id] || "Live TV",
     program: "Live now",
@@ -130,6 +136,38 @@ async function loadXtream({ server, username, password }) {
   }));
 
   return normalizeLibrary(channels, movies, series);
+}
+
+async function loadChannelEpg(streamId, streamUrl) {
+  const session = providerSession.base ? providerSession : sessionFromStreamUrl(streamUrl);
+  if (!session.base) throw new Error("Load an Xtream provider before loading guide data.");
+  if (!streamId) return { guide: [] };
+  const { base, username, password } = session;
+  const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_short_epg&stream_id=${encodeURIComponent(streamId)}&limit=6`;
+  const info = await fetchJson(url);
+  const listings = asArray(info.epg_listings || info.listings || info);
+  const guide = listings.map((item, index) => ({
+    time: formatGuideTime(item.start_timestamp || item.start || item.start_time),
+    title: decodeMaybeBase64(item.title) || `Program ${index + 1}`,
+    description: decodeMaybeBase64(item.description || item.desc || "")
+  })).filter(item => item.title);
+  return { guide };
+}
+
+function sessionFromStreamUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    const parts = url.pathname.split("/").filter(Boolean);
+    const liveIndex = parts.indexOf("live");
+    if (liveIndex < 0 || parts.length < liveIndex + 4) return invalidSession();
+    return {
+      base: `${url.protocol}//${url.host}`,
+      username: decodeURIComponent(parts[liveIndex + 1]),
+      password: decodeURIComponent(parts[liveIndex + 2])
+    };
+  } catch (_error) {
+    return invalidSession();
+  }
 }
 
 async function loadSeriesInfo(seriesId) {
@@ -246,6 +284,30 @@ function normalizeBase(value) {
 function text(value, fallback) {
   const out = String(value || "").trim();
   return out || fallback;
+}
+
+function decodeMaybeBase64(value) {
+  const raw = text(value, "");
+  if (!raw) return "";
+  try {
+    if (/^[A-Za-z0-9+/=]+$/.test(raw) && raw.length % 4 === 0) {
+      const decoded = Buffer.from(raw, "base64").toString("utf8").trim();
+      if (decoded && /[a-z0-9]/i.test(decoded)) return decoded;
+    }
+  } catch (_error) {
+    return raw;
+  }
+  return raw;
+}
+
+function formatGuideTime(value) {
+  if (!value) return "";
+  const numeric = Number(value);
+  const date = Number.isFinite(numeric)
+    ? new Date(numeric * (numeric > 100000000000 ? 1 : 1000))
+    : new Date(String(value).replace(" ", "T"));
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 5);
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function unique(items) {

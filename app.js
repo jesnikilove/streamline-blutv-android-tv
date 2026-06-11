@@ -14,7 +14,8 @@ const state = {
   currentMedia: null,
   captionsOn: false,
   wideMode: false,
-  recording: null
+  recording: null,
+  controlsTimer: null
 };
 
 let data = {
@@ -224,6 +225,7 @@ function bindNavigation() {
   document.addEventListener("keydown", (event) => {
     if ($("homeScreen").classList.contains("hidden")) return;
     if (isTypingField(document.activeElement)) return;
+    if (handlePlayerKeys(event)) return;
     if (event.key === "Backspace" || event.key === "Escape") {
       if (state.view !== "live") {
         event.preventDefault();
@@ -234,6 +236,22 @@ function bindNavigation() {
       document.activeElement.click();
     }
   });
+}
+
+function handlePlayerKeys(event) {
+  const watching = state.currentMedia?.type === "Channel" || document.fullscreenElement || document.webkitFullscreenElement;
+  if (!watching) return false;
+  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    event.preventDefault();
+    surfChannel(event.key === "ArrowUp" ? -1 : 1);
+    return true;
+  }
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    showPlayerControls(true);
+    return true;
+  }
+  return false;
 }
 
 function isTypingField(element) {
@@ -321,7 +339,7 @@ function bindActions() {
 
 async function toggleFullscreen() {
   if (state.view !== "live") setView("live");
-  await openPlayerFullscreen(true);
+  await openPlayerFullscreen(false);
 }
 
 async function openPlayerFullscreen(showControls = false) {
@@ -336,18 +354,14 @@ async function openPlayerFullscreen(showControls = false) {
       } else {
         throw new Error("Fullscreen unsupported");
       }
-      if (showControls) {
-        $("videoPlayer").pause();
-        showPlayerControls(true);
-      }
+      showPlayerControls(showControls);
     } else {
       await exitPlayerFullscreen();
     }
     syncFullscreenButton();
   } catch (_error) {
-    $("videoPlayer").pause();
-    showPlayerControls(true);
-    toast("Fullscreen is blocked by this browser. Player controls are open.");
+    showPlayerControls(showControls);
+    toast("Fullscreen is blocked by this browser.");
   }
 }
 
@@ -367,11 +381,15 @@ function syncFullscreenButton() {
 }
 
 function showPlayerControls(show) {
+  clearTimeout(state.controlsTimer);
   $("playerControls").classList.toggle("hidden", !show);
   $("videoFrame").classList.toggle("controls-open", show);
   $("controlMediaTitle").textContent = state.currentMedia?.title || $("nowTitle").textContent || "Paused";
   $("playerPlayPause").textContent = $("videoPlayer").paused ? "Play" : "Pause";
-  if (show) $("playerPlayPause").focus();
+  if (show) {
+    $("playerPlayPause").focus();
+    state.controlsTimer = setTimeout(() => showPlayerControls(false), 4500);
+  }
 }
 
 function togglePlayerPlayback() {
@@ -466,11 +484,10 @@ function renderLive() {
     row.className = "list-row focusable" + (ch.id === state.selectedChannelId ? " active" : "");
     row.innerHTML = `<span class="row-title">${isFavorite(ch.id) ? "Star " : ""}${ch.name}</span><span class="row-sub">${ch.program}</span>`;
     row.addEventListener("click", () => {
-      const alreadySelected = state.selectedChannelId === ch.id;
       state.selectedChannelId = ch.id;
       renderLive();
       playSelectedChannel(true);
-      if (alreadySelected) openPlayerFullscreen();
+      setTimeout(() => openPlayerFullscreen(false), 80);
     });
     list.appendChild(row);
   });
@@ -506,6 +523,7 @@ function renderSelectedChannel() {
     row.innerHTML = `<span>${item.time}</span><span>${item.title}</span>`;
     guide.appendChild(row);
   });
+  loadChannelGuide(ch);
 }
 
 function playSelectedChannel(showToast) {
@@ -525,6 +543,7 @@ function playSelectedChannel(showToast) {
   if ($("autoplayToggle")?.checked !== false) {
     player.play().then(() => {
       $("playState").textContent = "Playing";
+      showPlayerControls(false);
     }).catch(() => {
       $("playState").textContent = "Preview";
     });
@@ -552,11 +571,55 @@ function playMedia(item, showToast = true) {
   };
   player.play().then(() => {
     $("playState").textContent = "Playing";
+    showPlayerControls(false);
   }).catch(() => {
     $("playState").textContent = "Preview";
   });
   setView("live");
+  $("sectionKicker").textContent = item.type || "Video";
+  $("sectionTitle").textContent = title;
+  $("miniGuide").innerHTML = "";
   if (showToast) toast(`Opening ${title}`);
+  setTimeout(() => openPlayerFullscreen(false), 80);
+}
+
+async function loadChannelGuide(ch) {
+  if (!ch?.streamId || ch.epgLoaded || ch.epgLoading) return;
+  ch.epgLoading = true;
+  try {
+    const response = await fetch("/api/channel-epg", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ streamId: ch.streamId })
+    });
+    const parsed = await response.json();
+    if (!response.ok || !parsed.ok) throw new Error(parsed.message || "Guide failed.");
+    if (parsed.data.guide?.length) {
+      ch.guide = parsed.data.guide;
+      ch.program = ch.guide[0].title || ch.program;
+      ch.description = ch.guide[0].description || ch.description;
+      ch.epgLoaded = true;
+      if (state.selectedChannelId === ch.id) renderSelectedChannel();
+      if (state.view === "guide") renderGuide();
+      renderLive();
+    }
+  } catch (_error) {
+    ch.epgLoaded = true;
+  } finally {
+    ch.epgLoading = false;
+  }
+}
+
+function surfChannel(direction) {
+  const channels = filteredChannels();
+  if (!channels.length) return;
+  const currentIndex = Math.max(0, channels.findIndex((ch) => ch.id === state.selectedChannelId));
+  const next = channels[(currentIndex + direction + channels.length) % channels.length];
+  state.selectedChannelId = next.id;
+  setView("live");
+  renderLive();
+  playSelectedChannel(true);
+  setTimeout(() => openPlayerFullscreen(false), 80);
 }
 
 function toggleSelectedFavorite() {
