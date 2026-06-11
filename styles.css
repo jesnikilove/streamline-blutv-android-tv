@@ -560,6 +560,11 @@ p {
   flex-wrap: wrap;
 }
 
+.stream-note {
+  color: var(--gold);
+  font-weight: 700;
+}
+
 .control-btn {
   min-height: 44px;
   padding: 0 14px;
@@ -661,10 +666,10 @@ p {
 .guide-times {
   min-height: 48px;
   border-bottom: 1px solid var(--line);
-  background: rgba(0, 0, 0, 0.18);
+  background: #171532;
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 5;
 }
 
 .guide-left {
@@ -690,6 +695,7 @@ p {
   border-left: 1px solid var(--line);
   color: var(--section);
   font-weight: 800;
+  background: #171532;
 }
 
 .guide-row {
@@ -711,11 +717,11 @@ p {
 }
 
 .guide-channel {
-  background: rgba(255, 255, 255, 0.04);
+  background: #201e3d;
   font-weight: 800;
   position: sticky;
   left: 0;
-  z-index: 1;
+  z-index: 3;
 }
 
 .program-block {

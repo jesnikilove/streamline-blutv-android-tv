@@ -121,6 +121,7 @@ function init() {
     try {
       data = JSON.parse(cache);
       repairChannelGuides(data.channels || []);
+      data.movies = sortMoviesForPlayback(data.movies || []);
       data.categories = buildLiveCategories(data.channels || [], data.categories || []);
       state.usingProviderData = true;
       state.category = data.categories[0] || state.category;
@@ -309,6 +310,7 @@ async function loadProviderCatalog(payload) {
   state.category = data.categories[0] || "All Channels";
   state.selectedChannelId = data.channels[0]?.id || "";
   state.movieCategory = data.movieTabs[0] || "Featured";
+  data.movies = sortMoviesForPlayback(data.movies || []);
   state.selectedMovieId = data.movies[0]?.id || "";
   state.selectedSeriesId = data.series[0]?.id || "";
   saveLogin(payload);
@@ -324,6 +326,26 @@ function persistProviderCache(library) {
     localStorage.removeItem("streamlineProviderCache");
     toast("Full catalog loaded for this session. Cache was too large to save.");
   }
+}
+
+function sortMoviesForPlayback(movies) {
+  return [...movies].sort((a, b) => {
+    const titleCompare = normalizeMovieTitle(a.title).localeCompare(normalizeMovieTitle(b.title));
+    if (titleCompare !== 0) return titleCompare;
+    return containerRank(a) - containerRank(b);
+  });
+}
+
+function normalizeMovieTitle(title) {
+  return normalizeSearch(title);
+}
+
+function containerRank(movie) {
+  const source = `${movie.container || ""} ${movie.streamUrl || ""}`.toLowerCase();
+  if (source.includes(".mp4") || source.includes("mp4")) return 0;
+  if (source.includes(".m3u8")) return 1;
+  if (source.includes(".mkv") || source.includes("mkv")) return 3;
+  return 2;
 }
 
 function buildLiveCategories(channels, existingCategories) {
@@ -931,8 +953,7 @@ async function loadChannelGuide(ch) {
       ch.description = ch.guide[0].description || ch.description;
       ch.epgLoaded = true;
       if (state.selectedChannelId === ch.id) renderSelectedChannel();
-      if (state.view === "guide") renderGuide();
-      renderLive();
+      if (state.view === "guide") updateGuideRow(ch);
     }
   } catch (_error) {
     ch.epgLoaded = true;
@@ -977,31 +998,44 @@ function isFavorite(id) {
 }
 
 function renderGuide() {
-  const channels = filteredChannels().slice(0, 80);
-  channels.slice(0, 24).forEach(loadChannelGuide);
-  const times = (channels.find((ch) => ch.guide?.length)?.guide || []).slice(0, 4).map((item) => item.time);
-  $("guideTimes").innerHTML = (times.length ? times : ["Now", "Next", "Later", "Tonight"]).map((t) => `<div>${t}</div>`).join("");
+  const channels = data.channels;
+  channels.slice(0, 80).forEach(loadChannelGuide);
+  $("guideTimes").innerHTML = ["Now", "Next", "Later", "Tonight"].map((t) => `<div>${t}</div>`).join("");
   const rows = $("guideRows");
   rows.innerHTML = "";
+  const fragment = document.createDocumentFragment();
   channels.forEach((ch) => {
     const row = document.createElement("div");
     row.className = "guide-row";
+    row.dataset.channelId = ch.id;
     const channelButton = document.createElement("button");
     channelButton.type = "button";
     channelButton.className = "guide-channel focusable";
     channelButton.textContent = ch.name;
     channelButton.addEventListener("click", () => openChannelFromGuide(ch));
     row.appendChild(channelButton);
-    ch.guide.slice(0, 4).forEach((g, i) => {
-      const block = document.createElement("button");
-      block.type = "button";
-      block.className = `program-block focusable ${i === 0 ? "now" : ""}`;
-      block.innerHTML = `<strong>${g.title}</strong><span>${g.time}</span>`;
-      block.addEventListener("click", () => openChannelFromGuide(ch));
-      row.appendChild(block);
-    });
-    rows.appendChild(row);
+    appendGuidePrograms(row, ch);
+    fragment.appendChild(row);
   });
+  rows.appendChild(fragment);
+}
+
+function appendGuidePrograms(row, ch) {
+  ch.guide.slice(0, 4).forEach((g, i) => {
+    const block = document.createElement("button");
+    block.type = "button";
+    block.className = `program-block focusable ${i === 0 ? "now" : ""}`;
+    block.innerHTML = `<strong>${g.title}</strong><span>${g.time}</span>`;
+    block.addEventListener("click", () => openChannelFromGuide(ch));
+    row.appendChild(block);
+  });
+}
+
+function updateGuideRow(ch) {
+  const row = document.querySelector(`.guide-row[data-channel-id="${ch.id}"]`);
+  if (!row) return;
+  row.querySelectorAll(".program-block").forEach((block) => block.remove());
+  appendGuidePrograms(row, ch);
 }
 
 async function openChannelFromGuide(ch) {
@@ -1029,7 +1063,11 @@ function renderMovies() {
   });
 
   let movies = state.movieCategory === "Featured" ? [...data.movies] : data.movies.filter((m) => m.category === state.movieCategory);
-  movies.sort((a, b) => state.movieSortAsc ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title));
+  movies.sort((a, b) => {
+    const titleCompare = a.title.localeCompare(b.title);
+    if (titleCompare !== 0) return state.movieSortAsc ? titleCompare : -titleCompare;
+    return containerRank(a) - containerRank(b);
+  });
   renderPosterGrid($("movieGrid"), movies, openMovieDetail, gridLimit);
   renderMovieDetail();
 }
@@ -1063,6 +1101,7 @@ function renderMovieDetail() {
       <p class="kicker">${movie.category || "Movie"} ${movie.year || ""}</p>
       <h3>${movie.title}</h3>
       <p>${movie.description || "Movie details from the provider library."}</p>
+      ${containerRank(movie) >= 3 ? `<p class="stream-note">This provider copy is an MKV file. If it has picture but no sound, the audio track is not browser-compatible.</p>` : ""}
       <div class="movie-actions">
         <button id="moviePlayButton" class="primary-btn focusable" type="button">Play Movie</button>
         <button id="movieFavoriteButton" class="ghost-btn focusable" type="button">${isFavorite(movie.id) ? "Unfavorite" : "Favorite"}</button>

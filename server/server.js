@@ -130,6 +130,7 @@ async function loadXtream({ server, username, password }) {
     image: text(item.stream_icon, ""),
     description: text(item.plot || item.description || item.short_description, ""),
     type: "Movie",
+    container: text(item.container_extension, "mp4").toLowerCase(),
     streamUrl: `${base}/movie/${username}/${password}/${item.stream_id}.${item.container_extension || "mp4"}`
   }));
 
