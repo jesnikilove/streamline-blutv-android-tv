@@ -1404,6 +1404,17 @@ async function playChannel(ch, showToast, options = {}) {
   enableHardwareVolume();
   player.poster = "";
   clearVideoError();
+  player.addEventListener("loadeddata", () => {
+    if (requestId === playbackRequestId) clearVideoError();
+  }, { once: true });
+  player.addEventListener("canplay", () => {
+    if (requestId === playbackRequestId) clearVideoError();
+  }, { once: true });
+  player.addEventListener("playing", () => {
+    if (requestId !== playbackRequestId) return;
+    clearVideoError();
+    $("playState").textContent = preview ? "Preview" : "Playing";
+  }, { once: true });
   await loadVideoSource(player, ch.streamUrl);
   player.onerror = () => {
     if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} is not available right now.`);
