@@ -12,6 +12,8 @@ let cacheSaveTimer = null;
 let searchRenderFrame = null;
 let providerSessionReady = false;
 let channelPreviewTimer = null;
+let backExitArmed = false;
+let backExitTimer = null;
 
 const libraryIndex = {
   channelCategoryMap: new Map(),
@@ -135,6 +137,7 @@ const $ = (id) => document.getElementById(id);
 
 function init() {
   document.body.classList.toggle("tv-app", isTvApp());
+  installBackHandler();
   loadCachedProviderLibrary();
   bindLogin();
   renderPlaylistProfiles();
@@ -149,6 +152,21 @@ function init() {
     restoreSavedProviderSession();
   } else {
     $("loginButton").focus();
+  }
+}
+
+function installBackHandler() {
+  window.streamlineHandleDeviceBack = () => handleAppBack();
+  if (!isTvApp()) return;
+  try {
+    window.history.replaceState({ streamline: true }, "", window.location.href);
+    window.history.pushState({ streamline: true, guard: true }, "", window.location.href);
+    window.addEventListener("popstate", () => {
+      const shouldExit = handleAppBack();
+      if (!shouldExit) window.history.pushState({ streamline: true, guard: true }, "", window.location.href);
+    });
+  } catch (_error) {
+    // Browser history is best-effort for TV remotes.
   }
 }
 
@@ -578,23 +596,41 @@ function bindNavigation() {
   document.addEventListener("keydown", (event) => {
     if ($("homeScreen").classList.contains("hidden")) return;
     if (isTypingField(document.activeElement)) return;
-    if (document.body.classList.contains("tv-player-open") && (event.key === "Backspace" || event.key === "Escape")) {
-      event.preventDefault();
-      exitPlayerFullscreen();
-      return;
-    }
     if (handlePlayerKeys(event)) return;
     if (handleTvFocusKeys(event)) return;
     if (event.key === "Backspace" || event.key === "Escape") {
-      if (state.view !== "live") {
-        event.preventDefault();
-        setView("live");
-      }
+      event.preventDefault();
+      handleAppBack();
+      return;
     }
     if (event.key === "Enter" && document.activeElement?.classList.contains("poster-card")) {
       document.activeElement.click();
     }
   });
+}
+
+function handleAppBack() {
+  if (!$("homeScreen") || $("homeScreen").classList.contains("hidden")) return false;
+  if (document.body.classList.contains("tv-player-open")) {
+    exitPlayerFullscreen();
+    return false;
+  }
+  if (state.view !== "live") {
+    setView("live");
+    document.querySelector('[data-view="live"]')?.focus();
+    return false;
+  }
+  if (!backExitArmed) {
+    backExitArmed = true;
+    clearTimeout(backExitTimer);
+    backExitTimer = setTimeout(() => {
+      backExitArmed = false;
+    }, 1600);
+    toast("Press Back again to exit");
+    return false;
+  }
+  backExitArmed = false;
+  return true;
 }
 
 function handlePlayerKeys(event) {
@@ -736,6 +772,7 @@ function setView(view) {
   $(`view${capitalize(view)}`).classList.add("active");
   $("sectionKicker").textContent = labelForView(view);
   $("sectionTitle").textContent = titleForView(view);
+  if (view === "live") renderLive();
   if (view === "guide") renderGuide();
   if (view === "movies") renderMovies();
   if (view === "series") renderSeries();
@@ -744,6 +781,12 @@ function setView(view) {
     renderSearch();
     setTimeout(() => $("searchInput").focus(), 0);
   }
+}
+
+function resetLiveSelection() {
+  state.category = "All Channels";
+  state.selectedChannelId = data.channels[0]?.id || "";
+  $("sectionTitle").textContent = state.category;
 }
 
 function capitalize(text) {
@@ -1717,8 +1760,9 @@ async function reloadProviderCatalog() {
   button.textContent = "Loading Catalog";
   try {
     await loadProviderCatalog(JSON.parse(payloadText));
+    resetLiveSelection();
     setView("live");
-    toast(`Loaded ${data.movies.length} movies and ${data.series.length} series`);
+    toast(`Loaded ${data.channels.length} channels, ${data.movies.length} movies, and ${data.series.length} series`);
   } catch (error) {
     toast(error.message || "Catalog reload failed.");
   } finally {
