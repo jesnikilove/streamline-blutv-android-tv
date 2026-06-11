@@ -11,6 +11,7 @@ const liveLimit = readLimit(process.env.LIVE_LIMIT);
 const vodLimit = readLimit(process.env.VOD_LIMIT);
 const seriesLimit = readLimit(process.env.SERIES_LIMIT);
 let providerSession = invalidSession();
+const liveHlsSessions = new Map();
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -57,6 +58,9 @@ http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url.startsWith("/api/transcode-live/")) {
       return transcodeLive(req, res);
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/live-hls/")) {
+      return serveLiveHls(req, res);
     }
     if (req.method === "GET" && req.url.startsWith("/api/transcode-movie")) {
       return transcodeMovie(req, res);
@@ -400,6 +404,90 @@ async function transcodeLive(req, res) {
   ffmpeg.on("error", () => {
     if (!res.headersSent) sendJson(res, 500, { ok: false, message: "Live video conversion failed." });
     else res.end();
+  });
+}
+
+async function serveLiveHls(req, res) {
+  if (!providerSession.base) throw new Error("Load your provider before playing live TV.");
+  const requestUrl = new URL(req.url, `http://${host}:${port}`);
+  const match = requestUrl.pathname.match(/^\/api\/live-hls\/([^/]+)\/([^/]+)$/);
+  if (!match) throw new Error("Missing live HLS stream.");
+  const streamId = decodeURIComponent(match[1]);
+  const fileName = decodeURIComponent(match[2]);
+  const session = ensureLiveHlsSession(streamId);
+  if (fileName === "playlist.m3u8") {
+    await waitForFile(session.playlistPath, 6500);
+  }
+  const filePath = path.resolve(session.dir, fileName);
+  if (!filePath.startsWith(session.dir)) throw new Error("Invalid HLS segment.");
+  fs.readFile(filePath, (error, data) => {
+    if (error) return sendJson(res, 404, { ok: false, message: "Stream is starting. Try again." });
+    const contentType = fileName.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t";
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-store"
+    });
+    res.end(data);
+  });
+}
+
+function ensureLiveHlsSession(streamId) {
+  const existing = liveHlsSessions.get(streamId);
+  if (existing && !existing.ffmpeg.killed) {
+    existing.lastUsed = Date.now();
+    return existing;
+  }
+  const { base, username, password } = providerSession;
+  const safeId = String(streamId).replace(/[^a-zA-Z0-9_-]/g, "_");
+  const dir = path.join("/private/tmp", "streamline-blutv-hls", safeId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.readdirSync(dir).forEach((file) => {
+    try { fs.unlinkSync(path.join(dir, file)); } catch (_error) {}
+  });
+  const liveUrl = `${base}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.ts`;
+  const playlistPath = path.join(dir, "playlist.m3u8");
+  const args = [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-fflags", "+genpts",
+    "-i", liveUrl,
+    "-map", "0:v:0?",
+    "-map", "0:a:0?",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-tune", "zerolatency",
+    "-pix_fmt", "yuv420p",
+    "-profile:v", "baseline",
+    "-level", "3.1",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-f", "hls",
+    "-hls_time", "2",
+    "-hls_list_size", "5",
+    "-hls_flags", "delete_segments+append_list+omit_endlist",
+    "-hls_segment_filename", path.join(dir, "seg_%05d.ts"),
+    playlistPath
+  ];
+  const ffmpeg = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "ignore"] });
+  const session = { dir, playlistPath, ffmpeg, lastUsed: Date.now() };
+  liveHlsSessions.set(streamId, session);
+  ffmpeg.on("close", () => {
+    if (liveHlsSessions.get(streamId) === session) liveHlsSessions.delete(streamId);
+  });
+  return session;
+}
+
+function waitForFile(filePath, timeoutMs) {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      fs.stat(filePath, (error, stats) => {
+        if (!error && stats.size > 0) return resolve(true);
+        if (Date.now() - startedAt > timeoutMs) return resolve(false);
+        setTimeout(check, 180);
+      });
+    };
+    check();
   });
 }
 

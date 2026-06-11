@@ -1514,7 +1514,7 @@ function playableMediaSource(item) {
 }
 
 function playableChannelSource(ch) {
-  if (isTvApp() && ch?.streamId) return `/api/transcode-live/${encodeURIComponent(ch.streamId)}.mp4`;
+  if (isTvApp() && ch?.streamId) return `/api/live-hls/${encodeURIComponent(ch.streamId)}/playlist.m3u8`;
   return ch?.streamUrl || "";
 }
 
