@@ -929,6 +929,22 @@ p {
   gap: 16px;
 }
 
+.settings-login-panel {
+  grid-column: 1 / -1;
+}
+
+.compact-form {
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.compact-segments {
+  max-width: 420px;
+}
+
+.inline-actions {
+  justify-content: flex-start;
+}
+
 .settings-card {
   padding: 18px;
 }
@@ -1008,6 +1024,8 @@ p {
 
 body.tv-app .tv-screen {
   grid-template-columns: 170px minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
 }
 
 body.tv-app .login-screen {
@@ -1058,6 +1076,27 @@ body.tv-app .topbar {
 
 body.tv-app .main-pane {
   padding: 18px;
+  height: 100vh;
+  overflow: auto;
+}
+
+body.tv-app .view.active {
+  min-height: calc(100vh - 124px);
+}
+
+body.tv-app .settings-grid {
+  min-height: calc(100vh - 124px);
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  grid-auto-rows: minmax(170px, auto);
+  align-content: start;
+}
+
+body.tv-app .settings-login-panel {
+  grid-column: 1 / -1;
+}
+
+body.tv-app .compact-form {
+  grid-template-columns: repeat(3, minmax(170px, 1fr));
 }
 
 body.tv-app .list-row {

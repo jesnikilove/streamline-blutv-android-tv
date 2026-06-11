@@ -170,6 +170,26 @@
               <p id="settingsProvider">Demo Provider</p>
               <button id="changeLogin" class="primary-btn focusable" type="button">Change Login</button>
             </div>
+            <div id="settingsLoginPanel" class="settings-card settings-login-panel hidden">
+              <h3>Provider Login</h3>
+              <div class="segmented compact-segments" role="tablist">
+                <button class="segment active focusable" data-login-mode="xtream" type="button">Xtream Codes</button>
+                <button class="segment focusable" data-login-mode="m3u" type="button">M3U Playlist</button>
+              </div>
+              <div id="settingsXtreamForm" class="form-grid compact-form">
+                <label>Server URL<input class="focusable" id="settingsServerInput" value="https://provider.example.com:8080"></label>
+                <label>Username<input class="focusable" id="settingsUsernameInput" value="demo_user"></label>
+                <label>Password<input class="focusable" id="settingsPasswordInput" value="demo_pass" type="password"></label>
+              </div>
+              <div id="settingsM3uForm" class="form-grid compact-form hidden">
+                <label>Playlist URL<input class="focusable" id="settingsPlaylistInput" value="https://provider.example.com/get.php?type=m3u_plus"></label>
+              </div>
+              <div class="login-actions inline-actions">
+                <button id="settingsLoginButton" class="primary-btn focusable" type="button">Continue</button>
+                <button id="settingsCancelLogin" class="ghost-btn focusable" type="button">Cancel</button>
+              </div>
+              <p id="settingsLoginStatus" class="login-status"></p>
+            </div>
             <div class="settings-card">
               <h3>Playback</h3>
               <label class="toggle-row"><span>Prefer HLS</span><input id="hlsToggle" class="focusable" type="checkbox" checked></label>

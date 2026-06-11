@@ -222,6 +222,8 @@ function bindLogin() {
   });
   restoreRememberedLoginForm();
   $("loginButton").addEventListener("click", loginWithProvider);
+  $("settingsLoginButton").addEventListener("click", loginWithProvider);
+  $("settingsCancelLogin").addEventListener("click", hideSettingsLoginPanel);
   $("savePlaylistButton").addEventListener("click", savePlaylistProfile);
   $("loadPlaylistButton").addEventListener("click", loadSelectedPlaylistProfile);
   $("deletePlaylistButton").addEventListener("click", deleteSelectedPlaylistProfile);
@@ -238,19 +240,22 @@ function setLoginMode(mode) {
   document.querySelectorAll("[data-login-mode]").forEach((btn) => btn.classList.toggle("active", btn.dataset.loginMode === mode));
   $("xtreamForm").classList.toggle("hidden", mode !== "xtream");
   $("m3uForm").classList.toggle("hidden", mode !== "m3u");
+  $("settingsXtreamForm").classList.toggle("hidden", mode !== "xtream");
+  $("settingsM3uForm").classList.toggle("hidden", mode !== "m3u");
 }
 
 function getProviderPayload() {
+  const inSettings = isSettingsLoginOpen();
   return state.loginMode === "xtream"
     ? {
         mode: "xtream",
-        server: $("serverInput").value.trim(),
-        username: $("usernameInput").value.trim(),
-        password: $("passwordInput").value.trim()
+        server: $(inSettings ? "settingsServerInput" : "serverInput").value.trim(),
+        username: $(inSettings ? "settingsUsernameInput" : "usernameInput").value.trim(),
+        password: $(inSettings ? "settingsPasswordInput" : "passwordInput").value.trim()
       }
     : {
         mode: "m3u",
-        playlistUrl: $("playlistInput").value.trim()
+        playlistUrl: $(inSettings ? "settingsPlaylistInput" : "playlistInput").value.trim()
       };
 }
 
@@ -276,19 +281,29 @@ function restoreRememberedLoginForm() {
 
 async function loginWithProvider() {
   setLoginStatus("Loading provider data...");
-  $("loginButton").disabled = true;
+  setLoginButtonsDisabled(true);
   try {
     const payload = getProviderPayload();
 
     sessionStorage.setItem("streamlineLastProviderPayload", JSON.stringify(payload));
     await loadProviderCatalog(payload);
     setLoginStatus("Provider loaded.");
-    showHome();
+    if (isSettingsLoginOpen()) {
+      hideSettingsLoginPanel();
+      setView("live");
+    } else {
+      showHome();
+    }
   } catch (error) {
     setLoginStatus(error.message || "Could not load provider.");
   } finally {
-    $("loginButton").disabled = false;
+    setLoginButtonsDisabled(false);
   }
+}
+
+function setLoginButtonsDisabled(disabled) {
+  $("loginButton").disabled = disabled;
+  $("settingsLoginButton").disabled = disabled;
 }
 
 function playlistProfiles() {
@@ -355,10 +370,14 @@ function applyPlaylistProfile(profile) {
   setLoginMode(payload.mode || "xtream");
   if (payload.mode === "m3u") {
     $("playlistInput").value = payload.playlistUrl || "";
+    $("settingsPlaylistInput").value = payload.playlistUrl || "";
   } else {
     $("serverInput").value = payload.server || "";
     $("usernameInput").value = payload.username || "";
     $("passwordInput").value = payload.password || "";
+    $("settingsServerInput").value = payload.server || "";
+    $("settingsUsernameInput").value = payload.username || "";
+    $("settingsPasswordInput").value = payload.password || "";
   }
 }
 
@@ -512,6 +531,32 @@ function fallbackGuideForChannel(ch) {
 function setLoginStatus(message) {
   const status = $("loginStatus");
   if (status) status.textContent = message;
+  const settingsStatus = $("settingsLoginStatus");
+  if (settingsStatus) settingsStatus.textContent = message;
+}
+
+function isSettingsLoginOpen() {
+  return !$("settingsLoginPanel")?.classList.contains("hidden");
+}
+
+function showSettingsLoginPanel() {
+  restoreRememberedLoginForm();
+  $("settingsLoginPanel").classList.remove("hidden");
+  $("sectionKicker").textContent = "Settings";
+  $("sectionTitle").textContent = "Provider Login";
+  setLoginStatus("");
+  setTimeout(() => {
+    const target = state.loginMode === "m3u" ? $("settingsPlaylistInput") : $("settingsServerInput");
+    target.focus();
+  }, 0);
+}
+
+function hideSettingsLoginPanel() {
+  $("settingsLoginPanel").classList.add("hidden");
+  $("sectionKicker").textContent = labelForView("settings");
+  $("sectionTitle").textContent = titleForView("settings");
+  setLoginStatus("");
+  $("changeLogin").focus();
 }
 
 function showHome() {
@@ -742,13 +787,9 @@ function bindActions() {
   });
   $("searchInput").addEventListener("input", scheduleSearchRender);
   $("changeLogin").addEventListener("click", () => {
-    localStorage.removeItem("streamlineLoggedIn");
     clearTimeout(channelPreviewTimer);
     $("videoPlayer").pause();
-    $("homeScreen").classList.add("hidden");
-    $("loginScreen").classList.remove("hidden");
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-    $("loginButton").focus();
+    showSettingsLoginPanel();
   });
   $("reloadProvider").addEventListener("click", reloadProviderCatalog);
   $("clearCache").addEventListener("click", () => {
