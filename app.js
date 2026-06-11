@@ -725,10 +725,13 @@ function renderLive() {
     row.className = "list-row focusable" + (ch.id === state.selectedChannelId ? " active" : "");
     row.innerHTML = `<span class="row-title">${isFavorite(ch.id) ? "Star " : ""}${ch.name}</span><span class="row-sub">${ch.program}</span>`;
     row.addEventListener("click", () => {
+      const openingSelectedChannel = state.selectedChannelId === ch.id;
       state.selectedChannelId = ch.id;
       renderLive();
-      playSelectedChannel(true);
-      setTimeout(() => openPlayerFullscreen(false), 80);
+      playSelectedChannel(false);
+      if (openingSelectedChannel) {
+        setTimeout(() => openPlayerFullscreen(false), 80);
+      }
     });
     list.appendChild(row);
   });
