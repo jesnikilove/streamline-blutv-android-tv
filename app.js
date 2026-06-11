@@ -1,6 +1,23 @@
 const videoUrl = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
 const gridLimit = 240;
+const liveInitialLimit = 140;
+const liveChunkSize = 180;
+const guideInitialLimit = 80;
+const guideChunkSize = 120;
+const providerRefreshMs = 1000 * 60 * 60 * 6;
 let hlsPlayer = null;
+let guideRenderToken = 0;
+let liveRenderToken = 0;
+let cacheSaveTimer = null;
+let searchRenderFrame = null;
+let providerSessionReady = false;
+
+const libraryIndex = {
+  channelCategoryMap: new Map(),
+  smartCategoryMap: new Map(),
+  channelCounts: new Map(),
+  searchItems: []
+};
 
 const internationalCategoryTerms = [
   "africa", "arabic", "argentina", "asia", "australia", "balkan", "brazil", "caribbean", "chile", "colombia",
@@ -117,23 +134,7 @@ const $ = (id) => document.getElementById(id);
 
 function init() {
   document.body.classList.toggle("tv-app", isTvApp());
-  const cache = localStorage.getItem("streamlineProviderCache");
-  if (cache) {
-    try {
-      data = JSON.parse(cache);
-      repairChannelGuides(data.channels || []);
-      data.movies = sortMoviesForPlayback(data.movies || []);
-      data.categories = buildLiveCategories(data.channels || [], data.categories || []);
-      state.usingProviderData = true;
-      state.category = data.categories[0] || state.category;
-      state.selectedChannelId = data.channels[0]?.id || state.selectedChannelId;
-      state.movieCategory = data.movieTabs[0] || state.movieCategory;
-      state.selectedMovieId = data.movies[0]?.id || state.selectedMovieId;
-      state.selectedSeriesId = data.series[0]?.id || state.selectedSeriesId;
-    } catch (_error) {
-      localStorage.removeItem("streamlineProviderCache");
-    }
-  }
+  loadCachedProviderLibrary();
   bindLogin();
   renderPlaylistProfiles();
   bindNavigation();
@@ -150,6 +151,35 @@ function init() {
   }
 }
 
+function loadCachedProviderLibrary() {
+  const cache = localStorage.getItem("streamlineProviderCache");
+  if (!cache) {
+    rebuildLibraryIndex();
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(cache);
+    data = parsed.library || parsed;
+    prepareProviderLibrary(data);
+    state.usingProviderData = true;
+    selectFirstAvailableItems();
+    return true;
+  } catch (_error) {
+    localStorage.removeItem("streamlineProviderCache");
+    rebuildLibraryIndex();
+    return false;
+  }
+}
+
+function cachedProviderMeta() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("streamlineProviderCache") || "{}");
+    return parsed.library ? parsed : { savedAt: 0 };
+  } catch (_error) {
+    return { savedAt: 0 };
+  }
+}
+
 function isTvApp() {
   return new URLSearchParams(window.location.search).get("tvApp") === "1"
     || navigator.userAgent.includes("StreamlineBluTVApp");
@@ -158,12 +188,31 @@ function isTvApp() {
 async function restoreSavedProviderSession() {
   const payloadText = sessionStorage.getItem("streamlineLastProviderPayload") || localStorage.getItem("streamlineRememberedProviderPayload");
   if (!payloadText || !state.usingProviderData) return;
-  try {
-    await loadProviderCatalog(JSON.parse(payloadText));
-    renderAll();
-  } catch (_error) {
-    toast("Use Change Login once to refresh the provider.");
+  const meta = cachedProviderMeta();
+  if (Date.now() - Number(meta.savedAt || 0) < providerRefreshMs) {
+    warmProviderSession(JSON.parse(payloadText))
+      .then(() => playSelectedChannel(false))
+      .catch(() => {});
+    updateCacheInfo();
+    return;
   }
+  try {
+    await refreshProviderCatalog(JSON.parse(payloadText), { quiet: true });
+  } catch (_error) {
+    updateCacheInfo("Saved library ready. Provider refresh will try again later.");
+  }
+}
+
+async function warmProviderSession(payload) {
+  const response = await fetch("/api/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const parsed = await response.json().catch(() => ({}));
+  if (!response.ok || !parsed.ok) throw new Error(parsed.message || "Provider session failed.");
+  providerSessionReady = true;
+  return parsed.data;
 }
 
 function bindLogin() {
@@ -313,6 +362,11 @@ function applyPlaylistProfile(profile) {
 }
 
 async function loadProviderCatalog(payload) {
+  return refreshProviderCatalog(payload, { quiet: false });
+}
+
+async function refreshProviderCatalog(payload, options = {}) {
+  const quiet = !!options.quiet;
   const response = await fetch("/api/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -323,27 +377,75 @@ async function loadProviderCatalog(payload) {
 
   data = parsed.data;
   state.usingProviderData = true;
-  repairChannelGuides(data.channels || []);
-  data.categories = buildLiveCategories(data.channels, data.categories);
-  state.category = data.categories[0] || "All Channels";
-  state.selectedChannelId = data.channels[0]?.id || "";
-  state.movieCategory = data.movieTabs[0] || "Featured";
-  data.movies = sortMoviesForPlayback(data.movies || []);
-  state.selectedMovieId = data.movies[0]?.id || "";
-  state.selectedSeriesId = data.series[0]?.id || "";
+  providerSessionReady = true;
+  prepareProviderLibrary(data);
+  selectFirstAvailableItems();
   saveLogin(payload);
   persistProviderCache(parsed.data);
   updateCacheInfo();
+  if (quiet) renderCurrentView();
   return parsed.data;
+}
+
+function prepareProviderLibrary(library) {
+  library.channels = library.channels || [];
+  library.movies = sortMoviesForPlayback(library.movies || []);
+  library.series = library.series || [];
+  repairChannelGuides(library.channels);
+  library.categories = buildLiveCategories(library.channels, library.categories || []);
+  library.movieTabs = library.movieTabs?.length ? library.movieTabs : ["Featured"];
+  rebuildLibraryIndex();
+}
+
+function selectFirstAvailableItems() {
+  state.category = data.categories.includes(state.category) ? state.category : data.categories[0] || "All Channels";
+  state.selectedChannelId = data.channels.some((item) => item.id === state.selectedChannelId) ? state.selectedChannelId : data.channels[0]?.id || "";
+  state.movieCategory = data.movieTabs.includes(state.movieCategory) ? state.movieCategory : data.movieTabs[0] || "Featured";
+  state.selectedMovieId = data.movies.some((item) => item.id === state.selectedMovieId) ? state.selectedMovieId : data.movies[0]?.id || "";
+  state.selectedSeriesId = data.series.some((item) => item.id === state.selectedSeriesId) ? state.selectedSeriesId : data.series[0]?.id || "";
 }
 
 function persistProviderCache(library) {
   try {
-    localStorage.setItem("streamlineProviderCache", JSON.stringify(library));
+    localStorage.setItem("streamlineProviderCache", JSON.stringify({
+      savedAt: Date.now(),
+      library
+    }));
   } catch (_error) {
     localStorage.removeItem("streamlineProviderCache");
     toast("Full catalog loaded for this session. Cache was too large to save.");
   }
+}
+
+function persistProviderCacheSoon() {
+  clearTimeout(cacheSaveTimer);
+  cacheSaveTimer = setTimeout(() => {
+    if (state.usingProviderData) persistProviderCache(data);
+  }, 1200);
+}
+
+function rebuildLibraryIndex() {
+  libraryIndex.channelCategoryMap = new Map();
+  libraryIndex.smartCategoryMap = new Map();
+  libraryIndex.channelCounts = new Map();
+
+  data.channels.forEach((ch) => {
+    const category = ch.category || "Live TV";
+    if (!libraryIndex.channelCategoryMap.has(category)) libraryIndex.channelCategoryMap.set(category, []);
+    libraryIndex.channelCategoryMap.get(category).push(ch);
+  });
+
+  data.categories.forEach((cat) => {
+    const channels = channelsForCategoryUncached(cat);
+    libraryIndex.channelCounts.set(cat, channels.length);
+    if (smartCategoryRules.some((rule) => rule.name === cat)) libraryIndex.smartCategoryMap.set(cat, channels);
+  });
+
+  libraryIndex.searchItems = [
+    ...data.channels.map((item) => ({ title: item.name, subtitle: item.program, type: "Channel", image: item.image, item, searchText: normalizeSearch(`${item.name} ${item.program} ${item.category} Channel`) })),
+    ...data.movies.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.year || ""}`, type: "Movie", image: item.image, item, searchText: normalizeSearch(`${item.title} ${item.category} ${item.year || ""} Movie`) })),
+    ...data.series.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.seasons} seasons`, type: "Series", image: item.image, item, searchText: normalizeSearch(`${item.title} ${item.category} ${item.seasons} Series`) }))
+  ];
 }
 
 function sortMoviesForPlayback(movies) {
@@ -418,7 +520,7 @@ function showHome() {
   $("settingsProvider").textContent = localStorage.getItem("streamlineProviderName") || "Demo Provider";
   updateCacheInfo();
   renderLive();
-  playSelectedChannel(false);
+  if (!state.usingProviderData || providerSessionReady) playSelectedChannel(false);
   document.querySelector(".nav-item.active").focus();
 }
 
@@ -577,7 +679,7 @@ function bindActions() {
     $("sortMovies").textContent = state.movieSortAsc ? "A-Z" : "Z-A";
     renderMovies();
   });
-  $("searchInput").addEventListener("input", renderSearch);
+  $("searchInput").addEventListener("input", scheduleSearchRender);
   $("changeLogin").addEventListener("click", () => {
     localStorage.removeItem("streamlineLoggedIn");
     $("homeScreen").classList.add("hidden");
@@ -778,7 +880,18 @@ function renderAll() {
   renderSearch();
 }
 
+function renderCurrentView() {
+  if (state.view === "live") renderLive();
+  if (state.view === "guide") renderGuide();
+  if (state.view === "movies") renderMovies();
+  if (state.view === "series") renderSeries();
+  if (state.view === "favorites") renderFavorites();
+  if (state.view === "search") renderSearch();
+  updateCacheInfo();
+}
+
 function renderLive() {
+  const token = ++liveRenderToken;
   const categoryBox = $("liveCategories");
   categoryBox.innerHTML = "";
   data.categories.forEach((cat) => {
@@ -798,7 +911,17 @@ function renderLive() {
   if (!channels.some((ch) => ch.id === state.selectedChannelId) && channels[0]) state.selectedChannelId = channels[0].id;
   const list = $("channelList");
   list.innerHTML = "";
-  channels.forEach((ch) => {
+  appendChannelRows(list, channels, 0, liveInitialLimit, token);
+
+  renderSelectedChannel();
+}
+
+function appendChannelRows(list, channels, start, size, token) {
+  if (token !== liveRenderToken) return;
+  const fragment = document.createDocumentFragment();
+  const end = Math.min(start + size, channels.length);
+  for (let index = start; index < end; index += 1) {
+    const ch = channels[index];
     const row = document.createElement("button");
     row.type = "button";
     row.className = "list-row focusable" + (ch.id === state.selectedChannelId ? " active" : "");
@@ -812,24 +935,36 @@ function renderLive() {
         setTimeout(() => openPlayerFullscreen(false), 80);
       }
     });
-    list.appendChild(row);
-  });
-
-  renderSelectedChannel();
+    fragment.appendChild(row);
+  }
+  list.appendChild(fragment);
+  if (end < channels.length) {
+    scheduleIdle(() => appendChannelRows(list, channels, end, liveChunkSize, token));
+  }
 }
 
 function filteredChannels() {
-  if (state.category === "All Channels") return data.channels;
-  const smart = smartCategoryRules.find((rule) => rule.name === state.category);
+  return channelsForCategory(state.category);
+}
+
+function channelsForCategory(cat) {
+  if (cat === "All Channels") return data.channels;
+  if (libraryIndex.smartCategoryMap.has(cat)) return libraryIndex.smartCategoryMap.get(cat);
+  return libraryIndex.channelCategoryMap.get(cat) || channelsForCategoryUncached(cat);
+}
+
+function channelsForCategoryUncached(cat) {
+  if (cat === "All Channels") return data.channels;
+  const smart = smartCategoryRules.find((rule) => rule.name === cat);
   if (smart) return data.channels.filter((ch) => matchesSmartCategory(ch, smart));
-  return data.channels.filter((ch) => ch.category === state.category);
+  return data.channels.filter((ch) => ch.category === cat);
 }
 
 function countChannels(cat) {
-  if (cat === "All Channels") return data.channels.length;
-  const smart = smartCategoryRules.find((rule) => rule.name === cat);
-  if (smart) return data.channels.filter((ch) => matchesSmartCategory(ch, smart)).length;
-  return data.channels.filter((ch) => ch.category === cat).length;
+  if (libraryIndex.channelCounts.has(cat)) return libraryIndex.channelCounts.get(cat);
+  const count = channelsForCategory(cat).length;
+  libraryIndex.channelCounts.set(cat, count);
+  return count;
 }
 
 function matchesSmartCategory(channel, rule) {
@@ -1046,6 +1181,7 @@ async function loadChannelGuide(ch) {
       ch.epgLoaded = true;
       if (state.selectedChannelId === ch.id) renderSelectedChannel();
       if (state.view === "guide") updateGuideRow(ch);
+      persistProviderCacheSoon();
     }
   } catch (_error) {
     ch.epgLoaded = true;
@@ -1090,13 +1226,21 @@ function isFavorite(id) {
 }
 
 function renderGuide() {
+  const token = ++guideRenderToken;
   const channels = data.channels;
-  channels.slice(0, 80).forEach(loadChannelGuide);
+  channels.slice(0, guideInitialLimit).forEach(loadChannelGuide);
   $("guideTimes").innerHTML = ["Now", "Next", "Later", "Tonight"].map((t) => `<div>${t}</div>`).join("");
   const rows = $("guideRows");
   rows.innerHTML = "";
+  appendGuideRows(rows, channels, 0, guideInitialLimit, token);
+}
+
+function appendGuideRows(rows, channels, start, size, token) {
+  if (token !== guideRenderToken) return;
   const fragment = document.createDocumentFragment();
-  channels.forEach((ch) => {
+  const end = Math.min(start + size, channels.length);
+  for (let index = start; index < end; index += 1) {
+    const ch = channels[index];
     const row = document.createElement("div");
     row.className = "guide-row";
     row.dataset.channelId = ch.id;
@@ -1108,8 +1252,14 @@ function renderGuide() {
     row.appendChild(channelButton);
     appendGuidePrograms(row, ch);
     fragment.appendChild(row);
-  });
+  }
   rows.appendChild(fragment);
+  if (end < channels.length) {
+    scheduleIdle(() => {
+      channels.slice(end, Math.min(end + guideChunkSize, channels.length)).forEach(loadChannelGuide);
+      appendGuideRows(rows, channels, end, guideChunkSize, token);
+    });
+  }
 }
 
 function appendGuidePrograms(row, ch) {
@@ -1336,16 +1486,10 @@ function renderSearch() {
     suggestionRow.appendChild(btn);
   });
 
-  const everything = [
-    ...data.channels.map((item) => ({ title: item.name, subtitle: item.program, type: "Channel", image: item.image, item })),
-    ...data.movies.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.year || ""}`, type: "Movie", image: item.image, item })),
-    ...data.series.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.seasons} seasons`, type: "Series", image: item.image, item }))
-  ];
   const terms = q.split(" ").filter(Boolean);
-  const results = (q ? everything.filter((item) => {
-    const haystack = normalizeSearch(`${item.title} ${item.subtitle} ${item.type}`);
-    return terms.every((term) => haystack.includes(term));
-  }) : everything).slice(0, 80);
+  const results = (q ? libraryIndex.searchItems.filter((item) => {
+    return terms.every((term) => item.searchText.includes(term));
+  }) : libraryIndex.searchItems).slice(0, 80);
   const box = $("searchResults");
   box.innerHTML = "";
   if (results.length === 0) {
@@ -1365,6 +1509,11 @@ function renderSearch() {
     card.addEventListener("click", () => openSearchResult(item));
     box.appendChild(card);
   });
+}
+
+function scheduleSearchRender() {
+  cancelAnimationFrame(searchRenderFrame);
+  searchRenderFrame = requestAnimationFrame(renderSearch);
 }
 
 function openSearchResult(result) {
@@ -1389,7 +1538,7 @@ function openSearchResult(result) {
 }
 
 async function reloadProviderCatalog() {
-  const payloadText = sessionStorage.getItem("streamlineLastProviderPayload");
+  const payloadText = sessionStorage.getItem("streamlineLastProviderPayload") || localStorage.getItem("streamlineRememberedProviderPayload");
   if (!payloadText) {
     toast("Use Change Login once, then reload the catalog.");
     return;
@@ -1409,14 +1558,29 @@ async function reloadProviderCatalog() {
   }
 }
 
-function updateCacheInfo() {
+function updateCacheInfo(message) {
   const info = $("cacheInfo");
   if (!info) return;
-  info.textContent = `${data.channels.length} channels, ${data.movies.length} movies, ${data.series.length} series loaded.`;
+  if (message) {
+    info.textContent = message;
+    return;
+  }
+  const meta = cachedProviderMeta();
+  const savedAt = Number(meta.savedAt || 0);
+  const savedText = savedAt ? ` Saved ${new Date(savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` : "";
+  info.textContent = `${data.channels.length} channels, ${data.movies.length} movies, ${data.series.length} series loaded.${savedText}`;
 }
 
 function normalizeSearch(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function scheduleIdle(task) {
+  if ("requestIdleCallback" in window) {
+    requestIdleCallback(task, { timeout: 450 });
+  } else {
+    setTimeout(task, 16);
+  }
 }
 
 function updateClock() {

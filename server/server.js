@@ -34,6 +34,11 @@ http.createServer(async (req, res) => {
       const result = body.mode === "m3u" ? await loadM3u(body.playlistUrl) : await loadXtream(body);
       return sendJson(res, 200, { ok: true, data: result });
     }
+    if (req.method === "POST" && req.url === "/api/session") {
+      const body = await readJson(req);
+      const result = body.mode === "m3u" ? { ready: true } : await warmXtreamSession(body);
+      return sendJson(res, 200, { ok: true, data: result });
+    }
     if (req.method === "POST" && req.url === "/api/series-info") {
       const body = await readJson(req);
       const result = await loadSeriesInfo(body.seriesId);
@@ -101,9 +106,7 @@ async function loadXtream({ server, username, password }) {
   const base = normalizeBase(server);
   if (!base || !username || !password) throw new Error("Enter server, username, and password.");
 
-  const auth = await fetchJson(`${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`);
-  if (auth.user_info && Number(auth.user_info.auth) === 0) throw new Error("Provider rejected this login.");
-  providerSession = { base, username, password };
+  await warmXtreamSession({ server, username, password });
 
   const [liveCats, liveStreams, vodCats, vodStreams, seriesStreams] = await Promise.all([
     fetchJson(`${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_categories`).catch(() => []),
@@ -151,6 +154,15 @@ async function loadXtream({ server, username, password }) {
   }));
 
   return normalizeLibrary(channels, movies, series);
+}
+
+async function warmXtreamSession({ server, username, password }) {
+  const base = normalizeBase(server);
+  if (!base || !username || !password) throw new Error("Enter server, username, and password.");
+  const auth = await fetchJson(`${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`);
+  if (auth.user_info && Number(auth.user_info.auth) === 0) throw new Error("Provider rejected this login.");
+  providerSession = { base, username, password };
+  return { ready: true };
 }
 
 async function loadChannelEpg(streamId, streamUrl) {
