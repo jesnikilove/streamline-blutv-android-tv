@@ -5,6 +5,8 @@ const liveChunkSize = 180;
 const guideInitialLimit = 80;
 const guideChunkSize = 120;
 const providerRefreshMs = 1000 * 60 * 60 * 6;
+const providerCacheDbName = "StreamlineBluTV";
+const providerCacheStore = "providerCache";
 let hlsPlayer = null;
 let guideRenderToken = 0;
 let liveRenderToken = 0;
@@ -12,6 +14,7 @@ let cacheSaveTimer = null;
 let searchRenderFrame = null;
 let providerSessionReady = false;
 let channelPreviewTimer = null;
+let playbackRequestId = 0;
 let backExitArmed = false;
 let backExitTimer = null;
 
@@ -138,7 +141,7 @@ const $ = (id) => document.getElementById(id);
 function init() {
   document.body.classList.toggle("tv-app", isTvApp());
   installBackHandler();
-  loadCachedProviderLibrary();
+  const hasSyncCache = loadCachedProviderLibrary();
   bindLogin();
   renderPlaylistProfiles();
   bindNavigation();
@@ -153,6 +156,7 @@ function init() {
   } else {
     $("loginButton").focus();
   }
+  if (!hasSyncCache) hydrateLargeProviderCache();
 }
 
 function installBackHandler() {
@@ -178,6 +182,10 @@ function loadCachedProviderLibrary() {
   }
   try {
     const parsed = JSON.parse(cache);
+    if (!parsed.library && parsed.savedAt) {
+      rebuildLibraryIndex();
+      return false;
+    }
     data = parsed.library || parsed;
     prepareProviderLibrary(data);
     state.usingProviderData = true;
@@ -192,10 +200,32 @@ function loadCachedProviderLibrary() {
 
 function cachedProviderMeta() {
   try {
-    const parsed = JSON.parse(localStorage.getItem("streamlineProviderCache") || "{}");
-    return parsed.library ? parsed : { savedAt: 0 };
+    const parsed = JSON.parse(localStorage.getItem("streamlineProviderCacheMeta") || localStorage.getItem("streamlineProviderCache") || "{}");
+    return { savedAt: Number(parsed.savedAt || 0) };
   } catch (_error) {
     return { savedAt: 0 };
+  }
+}
+
+async function hydrateLargeProviderCache() {
+  if (!("indexedDB" in window)) return false;
+  try {
+    const record = await readProviderCacheRecord();
+    if (!record?.library) return false;
+    data = record.library;
+    prepareProviderLibrary(data);
+    state.usingProviderData = true;
+    selectFirstAvailableItems();
+    updateCacheInfo();
+    if (localStorage.getItem("streamlineLoggedIn") === "true") {
+      showHome();
+      restoreSavedProviderSession();
+    } else {
+      renderAll();
+    }
+    return true;
+  } catch (_error) {
+    return false;
   }
 }
 
@@ -205,7 +235,7 @@ function isTvApp() {
 }
 
 async function restoreSavedProviderSession() {
-  const payloadText = sessionStorage.getItem("streamlineLastProviderPayload") || localStorage.getItem("streamlineRememberedProviderPayload");
+  const payloadText = savedProviderPayloadText();
   if (!payloadText || !state.usingProviderData) return;
   const meta = cachedProviderMeta();
   if (Date.now() - Number(meta.savedAt || 0) < providerRefreshMs) {
@@ -220,6 +250,18 @@ async function restoreSavedProviderSession() {
   } catch (_error) {
     updateCacheInfo("Saved library ready. Provider refresh will try again later.");
   }
+}
+
+function savedProviderPayloadText() {
+  return sessionStorage.getItem("streamlineLastProviderPayload") || localStorage.getItem("streamlineRememberedProviderPayload");
+}
+
+async function ensureProviderSessionReady() {
+  if (!state.usingProviderData || providerSessionReady) return true;
+  const payloadText = savedProviderPayloadText();
+  if (!payloadText) return false;
+  await warmProviderSession(JSON.parse(payloadText));
+  return true;
 }
 
 async function warmProviderSession(payload) {
@@ -444,15 +486,64 @@ function selectFirstAvailableItems() {
 }
 
 function persistProviderCache(library) {
+  const record = { savedAt: Date.now(), library };
   try {
-    localStorage.setItem("streamlineProviderCache", JSON.stringify({
-      savedAt: Date.now(),
-      library
-    }));
+    localStorage.setItem("streamlineProviderCacheMeta", JSON.stringify({ savedAt: record.savedAt }));
+    localStorage.setItem("streamlineProviderCache", JSON.stringify({ savedAt: record.savedAt }));
   } catch (_error) {
     localStorage.removeItem("streamlineProviderCache");
-    toast("Full catalog loaded for this session. Cache was too large to save.");
   }
+  writeProviderCacheRecord(record).catch(() => {
+    toast("Full catalog loaded for this session. It may refresh again after restart.");
+  });
+}
+
+function openProviderCacheDb() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("Large local cache is not supported."));
+      return;
+    }
+    const request = indexedDB.open(providerCacheDbName, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(providerCacheStore)) db.createObjectStore(providerCacheStore);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Local cache failed."));
+  });
+}
+
+async function readProviderCacheRecord() {
+  const db = await openProviderCacheDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(providerCacheStore, "readonly");
+    const store = tx.objectStore(providerCacheStore);
+    const request = store.get("catalog");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Local cache read failed."));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error || new Error("Local cache read failed."));
+    };
+  });
+}
+
+async function writeProviderCacheRecord(record) {
+  const db = await openProviderCacheDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(providerCacheStore, "readwrite");
+    const store = tx.objectStore(providerCacheStore);
+    const request = store.put(record, "catalog");
+    request.onsuccess = () => resolve(true);
+    request.onerror = () => reject(request.error || new Error("Local cache save failed."));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error || new Error("Local cache save failed."));
+    };
+  });
 }
 
 function persistProviderCacheSoon() {
@@ -460,6 +551,22 @@ function persistProviderCacheSoon() {
   cacheSaveTimer = setTimeout(() => {
     if (state.usingProviderData) persistProviderCache(data);
   }, 1200);
+}
+
+async function clearProviderCacheRecord() {
+  const db = await openProviderCacheDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(providerCacheStore, "readwrite");
+    const store = tx.objectStore(providerCacheStore);
+    const request = store.delete("catalog");
+    request.onsuccess = () => resolve(true);
+    request.onerror = () => reject(request.error || new Error("Local cache clear failed."));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error || new Error("Local cache clear failed."));
+    };
+  });
 }
 
 function rebuildLibraryIndex() {
@@ -707,10 +814,15 @@ function handleLiveDirectionalFocus(event) {
   if ((inCategories || inChannels) && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
     event.preventDefault();
     const containerId = inCategories ? "liveCategories" : "channelList";
-    const rows = [...$(containerId).querySelectorAll(".list-row")];
+    const container = $(containerId);
+    let rows = [...container.querySelectorAll(".list-row")];
     if (!rows.length) return true;
     const currentIndex = Math.max(0, rows.indexOf(current));
     const direction = event.key === "ArrowDown" ? 1 : -1;
+    if (inChannels && direction > 0 && currentIndex >= rows.length - 1) {
+      appendMoreChannelRows(container, liveRenderToken);
+      rows = [...container.querySelectorAll(".list-row")];
+    }
     const next = rows[(currentIndex + direction + rows.length) % rows.length];
     next.focus();
     next.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
@@ -844,7 +956,9 @@ function bindActions() {
   $("clearCache").addEventListener("click", () => {
     localStorage.removeItem("streamlineFavorites");
     localStorage.removeItem("streamlineProviderCache");
+    localStorage.removeItem("streamlineProviderCacheMeta");
     localStorage.removeItem("streamlineRememberedProviderPayload");
+    clearProviderCacheRecord().catch(() => {});
     state.favorites = new Set();
     renderAll();
     toast("Local cache cleared");
@@ -1083,7 +1197,21 @@ function renderChannelList() {
   if (!channels.some((ch) => ch.id === state.selectedChannelId) && channels[0]) state.selectedChannelId = channels[0].id;
   const list = $("channelList");
   list.innerHTML = "";
+  list._channels = channels;
+  list.dataset.renderedEnd = "0";
+  list.onscroll = () => {
+    const nearBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 220;
+    if (nearBottom) appendMoreChannelRows(list, token);
+  };
   appendChannelRows(list, channels, 0, liveInitialLimit, token);
+}
+
+function appendMoreChannelRows(list, token) {
+  if (token !== liveRenderToken) return;
+  const channels = list._channels || [];
+  const start = Number(list.dataset.renderedEnd || 0);
+  if (start >= channels.length) return;
+  appendChannelRows(list, channels, start, liveChunkSize, token);
 }
 
 function appendChannelRows(list, channels, start, size, token) {
@@ -1107,9 +1235,7 @@ function appendChannelRows(list, channels, start, size, token) {
     fragment.appendChild(row);
   }
   list.appendChild(fragment);
-  if (end < channels.length) {
-    scheduleIdle(() => appendChannelRows(list, channels, end, liveChunkSize, token));
-  }
+  list.dataset.renderedEnd = String(end);
 }
 
 function selectLiveCategory(cat) {
@@ -1139,9 +1265,19 @@ function previewChannel(ch, options = {}) {
 
 function scheduleChannelPreview(ch) {
   clearTimeout(channelPreviewTimer);
-  channelPreviewTimer = setTimeout(() => {
+  channelPreviewTimer = setTimeout(async () => {
     if (state.view === "live" && state.selectedChannelId === ch.id) {
       loadChannelGuide(ch);
+      try {
+        const ready = await ensureProviderSessionReady();
+        if (!ready) {
+          toast("Provider is still waking up.");
+          return;
+        }
+      } catch (_error) {
+        toast("Provider is still waking up.");
+        return;
+      }
       playChannel(ch, false);
     }
   }, 320);
@@ -1250,6 +1386,18 @@ function playSelectedChannel(showToast) {
 
 async function playChannel(ch, showToast) {
   if (!ch) return;
+  const requestId = ++playbackRequestId;
+  try {
+    const ready = await ensureProviderSessionReady();
+    if (!ready) {
+      if (requestId === playbackRequestId) toast("Provider is still waking up.");
+      return;
+    }
+  } catch (_error) {
+    if (requestId === playbackRequestId) toast("Provider is still waking up.");
+    return;
+  }
+  if (requestId !== playbackRequestId) return;
   state.currentMedia = { id: ch.id, title: ch.name, type: "Channel" };
   const player = $("videoPlayer");
   enableHardwareVolume();
@@ -1257,15 +1405,16 @@ async function playChannel(ch, showToast) {
   clearVideoError();
   await loadVideoSource(player, ch.streamUrl);
   player.onerror = () => {
-    showVideoError(`${ch.name} is not available right now.`);
+    if (requestId === playbackRequestId) showVideoError(`${ch.name} is not available right now.`);
   };
   if ($("autoplayToggle")?.checked !== false) {
     $("playState").textContent = "Loading";
     player.play().then(() => {
+      if (requestId !== playbackRequestId) return;
       $("playState").textContent = "Playing";
       showPlayerControls(false);
     }).catch(() => {
-      showVideoError(`${ch.name} could not start.`);
+      if (requestId === playbackRequestId) showVideoError(`${ch.name} could not start.`);
     });
   }
 }
