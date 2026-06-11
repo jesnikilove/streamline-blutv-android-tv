@@ -39,13 +39,22 @@ const englishSpeakingCategoryTerms = [
 ];
 
 const smartCategoryRules = [
+  { name: "Pay-Per-View", special: "ppv" },
   { name: "US Channels", special: "us" },
   { name: "English Speaking", special: "english" },
   { name: "International", special: "international" },
   { name: "Women", terms: ["women", "woman", "her", "own", "lifetime", "we tv", "cleo"] },
   { name: "Christmas", terms: ["christmas", "holiday", "xmas", "santa", "hallmark"] },
   { name: "Crime", terms: ["crime", "investigation", "mystery", "court", "law", "justice", "forensic"] },
-  { name: "Prime Crime", terms: ["prime crime", "crime stories", "true crime"] },
+  { name: "Prime Crime", terms: [
+    "prime crime", "crime stories", "true crime", "chicago p d", "chicago pd",
+    "csi crime scene investigation", "csi cyber", "csi miami", "csi ny", "csi vegas",
+    "law order", "law and order", "law order criminal intent", "law and order criminal intent",
+    "law order organized crime", "law and order organized crime",
+    "law order special victims unit", "law and order special victims unit", "svu",
+    "law order toronto criminal intent", "law and order toronto criminal intent",
+    "law order true crime", "law and order true crime"
+  ] },
   { name: "Documentaries", terms: ["documentary", "docu", "history", "smithsonian", "nat geo", "discovery", "science"] },
   { name: "Music", terms: ["music", "mtv", "vh1", "radio", "hits", "jazz", "country"] },
   { name: "Local", terms: ["local", "abc ", "cbs ", "nbc ", "fox ", "cw ", "news 12", "sn1"] },
@@ -803,7 +812,9 @@ function handleLiveDirectionalFocus(event) {
   const current = document.activeElement;
   const inCategories = $("liveCategories").contains(current);
   const inChannels = $("channelList").contains(current);
-  if (!inCategories && !inChannels) return false;
+  const inVideoFrame = $("videoFrame").contains(current);
+  const favoriteFocused = current?.id === "favoriteButton";
+  if (!inCategories && !inChannels && !inVideoFrame && !favoriteFocused) return false;
 
   if (inCategories && event.key === "ArrowRight") {
     event.preventDefault();
@@ -812,6 +823,21 @@ function handleLiveDirectionalFocus(event) {
   if (inChannels && event.key === "ArrowLeft") {
     event.preventDefault();
     return focusActiveLiveRow("liveCategories", "category", state.category);
+  }
+  if (inChannels && event.key === "ArrowRight") {
+    event.preventDefault();
+    $("videoFrame").focus();
+    return true;
+  }
+  if (inVideoFrame && event.key === "ArrowRight") {
+    event.preventDefault();
+    $("favoriteButton").focus();
+    return true;
+  }
+  if (favoriteFocused && event.key === "ArrowLeft") {
+    event.preventDefault();
+    $("videoFrame").focus();
+    return true;
   }
   if ((inCategories || inChannels) && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
     event.preventDefault();
@@ -1297,16 +1323,20 @@ function filteredChannels() {
 }
 
 function channelsForCategory(cat) {
-  if (cat === "All Channels") return data.channels;
+  if (cat === "All Channels") return visibleLiveChannels();
   if (libraryIndex.smartCategoryMap.has(cat)) return libraryIndex.smartCategoryMap.get(cat);
   return libraryIndex.channelCategoryMap.get(cat) || channelsForCategoryUncached(cat);
 }
 
 function channelsForCategoryUncached(cat) {
-  if (cat === "All Channels") return data.channels;
+  if (cat === "All Channels") return visibleLiveChannels();
   const smart = smartCategoryRules.find((rule) => rule.name === cat);
   if (smart) return data.channels.filter((ch) => matchesSmartCategory(ch, smart));
   return data.channels.filter((ch) => ch.category === cat);
+}
+
+function visibleLiveChannels() {
+  return data.channels.filter((ch) => !isPayPerViewChannel(ch));
 }
 
 function countChannels(cat) {
@@ -1318,6 +1348,7 @@ function countChannels(cat) {
 
 function matchesSmartCategory(channel, rule) {
   const haystack = normalizeSearch(`${channel.name} ${channel.category} ${channel.program}`);
+  if (rule.special === "ppv") return isPayPerViewChannel(channel);
   if (rule.special === "international") return isInternationalChannel(channel) && !isUsChannel(channel);
   if (rule.special === "english") return isEnglishSpeakingChannel(channel);
   if (rule.special === "us") return isUsChannel(channel);
@@ -1325,7 +1356,7 @@ function matchesSmartCategory(channel, rule) {
 }
 
 function isHiddenProviderCategory(category) {
-  return hasCategoryTerm(category, internationalCategoryTerms);
+  return hasCategoryTerm(category, internationalCategoryTerms) || isPayPerViewText(category);
 }
 
 function isInternationalChannel(channel) {
@@ -1333,11 +1364,13 @@ function isInternationalChannel(channel) {
 }
 
 function isEnglishSpeakingChannel(channel) {
+  if (isPayPerViewChannel(channel)) return false;
   const value = `${channel.category} ${channel.name}`;
   return isUsChannel(channel) || hasCategoryTerm(value, englishSpeakingCategoryTerms);
 }
 
 function isUsChannel(channel) {
+  if (isPayPerViewChannel(channel)) return false;
   const value = normalizeSearch(`${channel.category} ${channel.name}`);
   if (value.includes("united states") || value.includes(" usa ") || value.startsWith("usa ")) return true;
   if (value.includes(" us ") || value.startsWith("us ") || value.endsWith(" us")) return true;
@@ -1345,6 +1378,15 @@ function isUsChannel(channel) {
   if (value.includes("nba") || value.includes("nfl") || value.includes("mlb") || value.includes("nhl")) return true;
   if (value.includes("espn") || value.includes("fox ") || value.includes("nbc ") || value.includes("abc ") || value.includes("cbs ")) return true;
   return !isInternationalChannel(channel);
+}
+
+function isPayPerViewChannel(channel) {
+  return isPayPerViewText(`${channel.category} ${channel.name} ${channel.program}`);
+}
+
+function isPayPerViewText(value) {
+  const normalized = normalizeSearch(value);
+  return normalized.includes("ppv") || normalized.includes("pay per view") || normalized.includes("payperview") || normalized.includes("live event");
 }
 
 function hasCategoryTerm(value, terms) {
@@ -1482,6 +1524,7 @@ function isProviderLocalUrl(url) {
 
 function loadVideoSource(player, source) {
   const url = source || "";
+  if (url && sameVideoSource(player, url) && player.readyState >= 1) return Promise.resolve();
   if (hlsPlayer) {
     hlsPlayer.destroy();
     hlsPlayer = null;
@@ -1525,11 +1568,23 @@ function loadVideoSource(player, source) {
   }
 }
 
+function sameVideoSource(player, source) {
+  const current = player.currentSrc || player.src;
+  if (!current || !source) return false;
+  try {
+    return new URL(current, location.href).href === new URL(source, location.href).href;
+  } catch (_error) {
+    return current === source;
+  }
+}
+
 function showVideoError(message) {
   const player = $("videoPlayer");
   $("playState").textContent = "Unavailable";
-  player.removeAttribute("src");
-  player.load();
+  if (player.readyState === 0) {
+    player.removeAttribute("src");
+    player.load();
+  }
   $("videoOverlay").classList.add("visible");
   showPlayerControls(false);
   toast(message);
