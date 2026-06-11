@@ -366,7 +366,7 @@ async function transcodeLive(req, res) {
   if (!match) throw new Error("Missing stream id.");
   const streamId = decodeURIComponent(match[1]);
   const { base, username, password } = providerSession;
-  const liveUrl = `${base}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.m3u8`;
+  const liveUrl = `${base}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.ts`;
 
   const args = [
     "-hide_banner",
