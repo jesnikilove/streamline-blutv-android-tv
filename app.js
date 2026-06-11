@@ -431,6 +431,7 @@ function bindNavigation() {
     if ($("homeScreen").classList.contains("hidden")) return;
     if (isTypingField(document.activeElement)) return;
     if (handlePlayerKeys(event)) return;
+    if (handleTvFocusKeys(event)) return;
     if (event.key === "Backspace" || event.key === "Escape") {
       if (state.view !== "live") {
         event.preventDefault();
@@ -446,6 +447,8 @@ function bindNavigation() {
 function handlePlayerKeys(event) {
   const watching = state.currentMedia?.type === "Channel" || document.fullscreenElement || document.webkitFullscreenElement;
   if (!watching) return false;
+  const playerFocused = $("videoFrame").contains(document.activeElement) || $("playerControls").contains(document.activeElement);
+  if (isTvApp() && !playerFocused) return false;
   if (event.key === "ArrowUp" || event.key === "ArrowDown") {
     event.preventDefault();
     surfChannel(event.key === "ArrowUp" ? -1 : 1);
@@ -457,6 +460,54 @@ function handlePlayerKeys(event) {
     return true;
   }
   return false;
+}
+
+function handleTvFocusKeys(event) {
+  if (!isTvApp() || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return false;
+  const focusables = visibleFocusables();
+  if (!focusables.length) return false;
+  const current = document.activeElement;
+  if (!focusables.includes(current)) {
+    focusables[0].focus();
+    return true;
+  }
+  const currentRect = current.getBoundingClientRect();
+  const currentCenter = rectCenter(currentRect);
+  const candidates = focusables.filter((item) => item !== current).map((item) => {
+    const rect = item.getBoundingClientRect();
+    const center = rectCenter(rect);
+    return { item, rect, center };
+  }).filter(({ rect, center }) => {
+    if (event.key === "ArrowRight") return center.x > currentCenter.x + 6;
+    if (event.key === "ArrowLeft") return center.x < currentCenter.x - 6;
+    if (event.key === "ArrowDown") return center.y > currentCenter.y + 6;
+    return center.y < currentCenter.y - 6;
+  });
+  if (!candidates.length) return false;
+  const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
+  candidates.sort((a, b) => {
+    const primaryA = horizontal ? Math.abs(a.center.x - currentCenter.x) : Math.abs(a.center.y - currentCenter.y);
+    const primaryB = horizontal ? Math.abs(b.center.x - currentCenter.x) : Math.abs(b.center.y - currentCenter.y);
+    const secondaryA = horizontal ? Math.abs(a.center.y - currentCenter.y) : Math.abs(a.center.x - currentCenter.x);
+    const secondaryB = horizontal ? Math.abs(b.center.y - currentCenter.y) : Math.abs(b.center.x - currentCenter.x);
+    return (primaryA + secondaryA * 1.8) - (primaryB + secondaryB * 1.8);
+  });
+  event.preventDefault();
+  candidates[0].item.focus();
+  candidates[0].item.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
+}
+
+function visibleFocusables() {
+  return [...document.querySelectorAll(".focusable:not([disabled])")].filter((item) => {
+    const rect = item.getBoundingClientRect();
+    const style = window.getComputedStyle(item);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+  });
+}
+
+function rectCenter(rect) {
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 }
 
 function isTypingField(element) {

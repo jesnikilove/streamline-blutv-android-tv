@@ -1043,3 +1043,10 @@ body.tv-app .main-pane {
 body.tv-app .list-row {
   min-height: 50px;
 }
+
+body.tv-app .focusable:focus {
+  outline: 4px solid #f5c445;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px rgba(245, 196, 69, 0.24), 0 18px 42px var(--shadow);
+  z-index: 80;
+}
