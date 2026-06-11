@@ -12,6 +12,8 @@
   --gold: #f5c445;
   --red: #f04444;
   --white: #ffffff;
+  --section: var(--blue);
+  --section-rgb: 37, 124, 255;
   --focus: #ffffff;
   --shadow: rgba(0, 0, 0, 0.35);
   --radius: 8px;
@@ -104,7 +106,7 @@ input {
 .category-panel,
 .channel-panel,
 .player-panel {
-  border: 1px solid var(--line);
+  border: 1px solid rgba(var(--section-rgb), 0.22);
   background: rgba(24, 22, 48, 0.94);
   box-shadow: 0 26px 60px var(--shadow);
   border-radius: var(--radius);
@@ -151,13 +153,13 @@ input {
 .primary-btn,
 .nav-item.active,
 .chip.active {
-  background: linear-gradient(135deg, var(--violet), var(--blue) 52%, var(--aqua));
+  background: linear-gradient(135deg, var(--violet), var(--section));
   color: #fff;
 }
 
 .ghost-btn {
-  border-color: rgba(245, 196, 69, 0.28);
-  background: rgba(245, 196, 69, 0.1);
+  border-color: rgba(var(--section-rgb), 0.34);
+  background: rgba(var(--section-rgb), 0.1);
 }
 
 .ghost-btn.compact {
@@ -246,67 +248,98 @@ input {
 
 .nav-icon {
   width: 38px;
-  color: var(--gold);
   font-size: 12px;
   font-weight: 800;
 }
 
-.nav-item:nth-of-type(3n) .nav-icon {
+.nav-item[data-view="live"] .nav-icon,
+.nav-item[data-view="series"] .nav-icon,
+.nav-item[data-view="settings"] .nav-icon {
+  color: var(--blue);
+}
+
+.nav-item[data-view="guide"] .nav-icon,
+.nav-item[data-view="favorites"] .nav-icon {
+  color: var(--gold);
+}
+
+.nav-item[data-view="movies"] .nav-icon,
+.nav-item[data-view="search"] .nav-icon {
   color: var(--red);
 }
 
-.nav-item:nth-of-type(3n + 1) .nav-icon {
-  color: var(--blue);
+.nav-item.active {
+  border-color: rgba(var(--section-rgb), 0.82);
+  background: linear-gradient(135deg, rgba(var(--section-rgb), 0.94), rgba(79, 220, 202, 0.42));
 }
 
 .main-pane {
   min-width: 0;
   padding: 24px;
   background:
-    linear-gradient(135deg, rgba(37, 124, 255, 0.12), rgba(128, 72, 255, 0.08)),
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.16), rgba(128, 72, 255, 0.08)),
     rgba(9, 8, 21, 0.36);
   transition: background 160ms ease;
 }
 
+.tv-screen[data-active-view="live"],
+.tv-screen[data-active-view="series"],
+.tv-screen[data-active-view="settings"] {
+  --section: var(--blue);
+  --section-rgb: 37, 124, 255;
+}
+
+.tv-screen[data-active-view="guide"],
+.tv-screen[data-active-view="favorites"] {
+  --section: var(--gold);
+  --section-rgb: 245, 196, 69;
+}
+
+.tv-screen[data-active-view="movies"],
+.tv-screen[data-active-view="search"] {
+  --section: var(--red);
+  --section-rgb: 240, 68, 68;
+}
+
 .tv-screen[data-active-view="live"] .main-pane {
   background:
-    linear-gradient(135deg, rgba(37, 124, 255, 0.2), rgba(128, 72, 255, 0.08)),
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.08)),
     rgba(9, 8, 21, 0.36);
 }
 
 .tv-screen[data-active-view="guide"] .main-pane {
   background:
-    linear-gradient(135deg, rgba(245, 196, 69, 0.2), rgba(128, 72, 255, 0.08)),
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.08)),
     rgba(9, 8, 21, 0.36);
 }
 
 .tv-screen[data-active-view="movies"] .main-pane {
   background:
-    linear-gradient(135deg, rgba(240, 68, 68, 0.16), rgba(37, 124, 255, 0.12), rgba(128, 72, 255, 0.08)),
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.1)),
     rgba(9, 8, 21, 0.36);
 }
 
 .tv-screen[data-active-view="series"] .main-pane {
   background:
-    linear-gradient(135deg, rgba(49, 191, 97, 0.18), rgba(128, 72, 255, 0.08)),
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.08)),
     rgba(9, 8, 21, 0.36);
 }
 
 .tv-screen[data-active-view="favorites"] .main-pane {
   background:
-    linear-gradient(135deg, rgba(240, 68, 68, 0.18), rgba(245, 196, 69, 0.1), rgba(128, 72, 255, 0.08)),
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.08)),
     rgba(9, 8, 21, 0.36);
 }
 
 .tv-screen[data-active-view="search"] .main-pane {
   background:
-    linear-gradient(135deg, rgba(79, 220, 202, 0.18), rgba(37, 124, 255, 0.12)),
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.08)),
     rgba(9, 8, 21, 0.36);
 }
 
 .tv-screen[data-active-view="settings"] .main-pane {
   background:
-    linear-gradient(135deg, rgba(128, 72, 255, 0.2), rgba(245, 196, 69, 0.08)),
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.08)),
     rgba(9, 8, 21, 0.36);
 }
 
@@ -333,7 +366,7 @@ input {
 
 .kicker {
   margin: 0 0 6px;
-  color: var(--aqua);
+  color: var(--section);
   font-size: 13px;
   font-weight: 800;
   text-transform: uppercase;
@@ -422,8 +455,8 @@ p {
 }
 
 .list-row.active {
-  background: linear-gradient(135deg, rgba(128, 72, 255, 0.28), rgba(37, 124, 255, 0.18));
-  border-color: rgba(245, 196, 69, 0.62);
+  background: linear-gradient(135deg, rgba(var(--section-rgb), 0.26), rgba(128, 72, 255, 0.16));
+  border-color: rgba(var(--section-rgb), 0.72);
 }
 
 .row-title {
@@ -505,7 +538,7 @@ p {
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: var(--radius);
   color: var(--text);
-  background: rgba(37, 124, 255, 0.18);
+  background: rgba(var(--section-rgb), 0.18);
   cursor: pointer;
 }
 
@@ -560,12 +593,12 @@ p {
   gap: 12px;
   padding: 10px 12px;
   border-radius: var(--radius);
-  border: 1px solid rgba(37, 124, 255, 0.16);
-  background: rgba(37, 124, 255, 0.09);
+  border: 1px solid rgba(var(--section-rgb), 0.18);
+  background: rgba(var(--section-rgb), 0.09);
 }
 
 .guide-item span:first-child {
-  color: var(--gold);
+  color: var(--section);
   font-weight: 800;
 }
 
@@ -604,7 +637,7 @@ p {
   place-items: center start;
   padding-left: 14px;
   border-left: 1px solid var(--line);
-  color: var(--gold);
+  color: var(--section);
   font-weight: 800;
 }
 
@@ -633,7 +666,7 @@ p {
 }
 
 .program-block.now {
-  background: linear-gradient(135deg, rgba(128, 72, 255, 0.22), rgba(245, 196, 69, 0.16));
+  background: linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.12));
 }
 
 .content-toolbar {
@@ -663,12 +696,12 @@ p {
 .poster-card {
   overflow: hidden;
   cursor: pointer;
-  border-color: rgba(37, 124, 255, 0.18);
-  background: linear-gradient(180deg, rgba(37, 124, 255, 0.12), rgba(128, 72, 255, 0.12));
+  border-color: rgba(var(--section-rgb), 0.2);
+  background: linear-gradient(180deg, rgba(var(--section-rgb), 0.12), rgba(128, 72, 255, 0.12));
 }
 
 .poster-card:focus {
-  border-color: rgba(245, 196, 69, 0.78);
+  border-color: rgba(var(--section-rgb), 0.82);
 }
 
 .movie-detail {
@@ -681,15 +714,15 @@ p {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background:
-    linear-gradient(135deg, rgba(128, 72, 255, 0.28), rgba(37, 124, 255, 0.16)),
-    linear-gradient(32deg, rgba(245, 196, 69, 0.12), rgba(240, 68, 68, 0.1));
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.14)),
+    rgba(24, 22, 48, 0.88);
   box-shadow: 0 26px 60px var(--shadow);
 }
 
 .movie-backdrop {
   min-height: 220px;
   border-radius: var(--radius);
-  border: 1px solid rgba(245, 196, 69, 0.34);
+  border: 1px solid rgba(var(--section-rgb), 0.42);
   background: center/cover;
 }
 
