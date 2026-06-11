@@ -113,6 +113,7 @@ async function loadXtream({ server, username, password }) {
     category: vodMap[item.category_id] || "VOD",
     year: text(item.year, ""),
     image: text(item.stream_icon, ""),
+    description: text(item.plot || item.description || item.short_description, ""),
     type: "Movie",
     streamUrl: `${base}/movie/${username}/${password}/${item.stream_id}.${item.container_extension || "mp4"}`
   }));

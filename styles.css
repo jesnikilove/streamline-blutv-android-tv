@@ -262,6 +262,52 @@ input {
 .main-pane {
   min-width: 0;
   padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(37, 124, 255, 0.12), rgba(128, 72, 255, 0.08)),
+    rgba(9, 8, 21, 0.36);
+  transition: background 160ms ease;
+}
+
+.tv-screen[data-active-view="live"] .main-pane {
+  background:
+    linear-gradient(135deg, rgba(37, 124, 255, 0.2), rgba(128, 72, 255, 0.08)),
+    rgba(9, 8, 21, 0.36);
+}
+
+.tv-screen[data-active-view="guide"] .main-pane {
+  background:
+    linear-gradient(135deg, rgba(245, 196, 69, 0.2), rgba(128, 72, 255, 0.08)),
+    rgba(9, 8, 21, 0.36);
+}
+
+.tv-screen[data-active-view="movies"] .main-pane {
+  background:
+    linear-gradient(135deg, rgba(240, 68, 68, 0.16), rgba(37, 124, 255, 0.12), rgba(128, 72, 255, 0.08)),
+    rgba(9, 8, 21, 0.36);
+}
+
+.tv-screen[data-active-view="series"] .main-pane {
+  background:
+    linear-gradient(135deg, rgba(49, 191, 97, 0.18), rgba(128, 72, 255, 0.08)),
+    rgba(9, 8, 21, 0.36);
+}
+
+.tv-screen[data-active-view="favorites"] .main-pane {
+  background:
+    linear-gradient(135deg, rgba(240, 68, 68, 0.18), rgba(245, 196, 69, 0.1), rgba(128, 72, 255, 0.08)),
+    rgba(9, 8, 21, 0.36);
+}
+
+.tv-screen[data-active-view="search"] .main-pane {
+  background:
+    linear-gradient(135deg, rgba(79, 220, 202, 0.18), rgba(37, 124, 255, 0.12)),
+    rgba(9, 8, 21, 0.36);
+}
+
+.tv-screen[data-active-view="settings"] .main-pane {
+  background:
+    linear-gradient(135deg, rgba(128, 72, 255, 0.2), rgba(245, 196, 69, 0.08)),
+    rgba(9, 8, 21, 0.36);
 }
 
 .topbar {
@@ -660,6 +706,13 @@ p {
 .movie-copy p {
   color: var(--muted);
 }
+
+.movie-copy h3 + p {
+  max-width: 760px;
+  margin-bottom: 18px;
+  color: var(--text);
+  line-height: 1.45;
+ }
 
 .poster-art {
   aspect-ratio: 2 / 3;

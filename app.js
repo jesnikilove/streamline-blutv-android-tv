@@ -207,6 +207,7 @@ function setLoginStatus(message) {
 function showHome() {
   $("loginScreen").classList.add("hidden");
   $("homeScreen").classList.remove("hidden");
+  $("homeScreen").dataset.activeView = state.view;
   $("providerText").textContent = localStorage.getItem("streamlineProviderName") || "Demo Provider";
   $("settingsProvider").textContent = $("providerText").textContent;
   updateCacheInfo();
@@ -241,6 +242,7 @@ function isTypingField(element) {
 
 function setView(view) {
   state.view = view;
+  $("homeScreen").dataset.activeView = view;
   document.querySelectorAll(".nav-item").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
   document.querySelectorAll(".view").forEach((panel) => panel.classList.remove("active"));
   $(`view${capitalize(view)}`).classList.add("active");
