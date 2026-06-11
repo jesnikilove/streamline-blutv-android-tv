@@ -46,7 +46,9 @@ const state = {
   captionsOn: false,
   wideMode: false,
   recording: null,
-  controlsTimer: null
+  controlsTimer: null,
+  playerVolume: Number(localStorage.getItem("streamlinePlayerVolume") || "1"),
+  playerMuted: localStorage.getItem("streamlinePlayerMuted") === "true"
 };
 
 let data = {
@@ -394,7 +396,12 @@ function titleForView(view) {
 function bindActions() {
   $("favoriteButton").addEventListener("click", toggleSelectedFavorite);
   $("fullscreenButton").addEventListener("click", toggleFullscreen);
+  $("rewindButton").addEventListener("click", () => seekPlayer(-15));
   $("playerPlayPause").addEventListener("click", togglePlayerPlayback);
+  $("forwardButton").addEventListener("click", () => seekPlayer(30));
+  $("volumeDownButton").addEventListener("click", () => adjustVolume(-0.1));
+  $("muteButton").addEventListener("click", toggleMute);
+  $("volumeUpButton").addEventListener("click", () => adjustVolume(0.1));
   $("ccButton").addEventListener("click", toggleCaptions);
   $("wideButton").addEventListener("click", toggleWideMode);
   $("recordButton").addEventListener("click", toggleRecording);
@@ -473,10 +480,21 @@ function showPlayerControls(show) {
   $("videoFrame").classList.toggle("controls-open", show);
   $("controlMediaTitle").textContent = state.currentMedia?.title || $("nowTitle").textContent || "Paused";
   $("playerPlayPause").textContent = $("videoPlayer").paused ? "Play" : "Pause";
+  updateVolumeButtons();
+  updatePlayerOptionStates();
   if (show) {
     $("playerPlayPause").focus();
     state.controlsTimer = setTimeout(() => showPlayerControls(false), 4500);
   }
+}
+
+function updatePlayerOptionStates() {
+  const player = $("videoPlayer");
+  const seekable = player.seekable?.length ? player.seekable.end(player.seekable.length - 1) - player.seekable.start(0) > 60 : false;
+  $("rewindButton").disabled = !seekable;
+  $("forwardButton").disabled = !seekable;
+  $("recordButton").disabled = !canRecordPlayer();
+  $("ccButton").classList.toggle("disabled", !hasCaptionTracks());
 }
 
 function togglePlayerPlayback() {
@@ -489,10 +507,78 @@ function togglePlayerPlayback() {
   }
 }
 
+function applyPlayerVolume() {
+  const player = $("videoPlayer");
+  player.volume = Math.min(1, Math.max(0, state.playerVolume));
+  player.muted = state.playerMuted || player.volume === 0;
+  updateVolumeButtons();
+}
+
+function adjustVolume(delta) {
+  state.playerVolume = Math.min(1, Math.max(0, Math.round((state.playerVolume + delta) * 10) / 10));
+  if (state.playerVolume > 0) state.playerMuted = false;
+  savePlayerVolume();
+  applyPlayerVolume();
+  toast(`Volume ${Math.round(state.playerVolume * 100)}%`);
+  showPlayerControls(true);
+}
+
+function toggleMute() {
+  state.playerMuted = !state.playerMuted;
+  savePlayerVolume();
+  applyPlayerVolume();
+  toast(state.playerMuted ? "Muted" : `Volume ${Math.round(state.playerVolume * 100)}%`);
+  showPlayerControls(true);
+}
+
+function savePlayerVolume() {
+  localStorage.setItem("streamlinePlayerVolume", String(state.playerVolume));
+  localStorage.setItem("streamlinePlayerMuted", String(state.playerMuted));
+}
+
+function updateVolumeButtons() {
+  const player = $("videoPlayer");
+  const percent = Math.round((player.volume || state.playerVolume) * 100);
+  $("muteButton").textContent = player.muted ? "Unmute" : `Mute ${percent}%`;
+}
+
+function seekPlayer(seconds) {
+  const player = $("videoPlayer");
+  if (!player.seekable?.length) {
+    toast("This live channel cannot rewind or fast-forward.");
+    return;
+  }
+  const start = player.seekable.start(0);
+  const end = player.seekable.end(player.seekable.length - 1);
+  const nextTime = Math.min(end, Math.max(start, player.currentTime + seconds));
+  if (!Number.isFinite(nextTime) || Math.abs(nextTime - player.currentTime) < 0.25) {
+    toast("This stream does not have DVR controls.");
+    return;
+  }
+  player.currentTime = nextTime;
+  showPlayerControls(true);
+}
+
 function toggleCaptions() {
+  if (!hasCaptionTracks()) {
+    toast("No captions are available on this stream.");
+    return;
+  }
   state.captionsOn = !state.captionsOn;
+  [...$("videoPlayer").textTracks].forEach((track) => {
+    track.mode = state.captionsOn ? "showing" : "disabled";
+  });
+  if (hlsPlayer) {
+    hlsPlayer.subtitleDisplay = state.captionsOn;
+    if (hlsPlayer.subtitleTracks?.length) hlsPlayer.subtitleTrack = state.captionsOn ? 0 : -1;
+  }
   $("ccButton").textContent = state.captionsOn ? "CC On" : "CC Off";
-  toast(state.captionsOn ? "Captions requested" : "Captions off");
+  toast(state.captionsOn ? "Captions on" : "Captions off");
+}
+
+function hasCaptionTracks() {
+  const tracks = $("videoPlayer").textTracks;
+  return (tracks && tracks.length > 0) || !!hlsPlayer?.subtitleTracks?.length;
 }
 
 function toggleWideMode() {
@@ -510,13 +596,15 @@ function toggleRecording() {
     toast("Recording stopped");
     return;
   }
-  if (!player.captureStream || typeof MediaRecorder === "undefined") {
+  if (!canRecordPlayer()) {
     toast("Recording is not available in this browser.");
     return;
   }
   try {
     const chunks = [];
-    const recorder = new MediaRecorder(player.captureStream());
+    const stream = player.captureStream();
+    const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((type) => MediaRecorder.isTypeSupported?.(type));
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     recorder.ondataavailable = (event) => {
       if (event.data.size) chunks.push(event.data);
     };
@@ -535,6 +623,11 @@ function toggleRecording() {
   } catch (_error) {
     toast("Recording is blocked for this stream.");
   }
+}
+
+function canRecordPlayer() {
+  const player = $("videoPlayer");
+  return !!(player.captureStream && typeof MediaRecorder !== "undefined" && !player.paused && player.readyState >= 2);
 }
 
 function renderAll() {
@@ -665,15 +758,14 @@ function playSelectedChannel(showToast) {
   playChannel(ch, showToast);
 }
 
-function playChannel(ch, showToast) {
+async function playChannel(ch, showToast) {
   if (!ch) return;
   state.currentMedia = { id: ch.id, title: ch.name, type: "Channel" };
   const player = $("videoPlayer");
-  player.muted = false;
-  player.volume = 1;
+  applyPlayerVolume();
   player.poster = ch.image;
   clearVideoError();
-  loadVideoSource(player, ch.streamUrl);
+  await loadVideoSource(player, ch.streamUrl);
   player.onerror = () => {
     showVideoError(`${ch.name} is not available right now.`);
   };
@@ -683,13 +775,13 @@ function playChannel(ch, showToast) {
       $("playState").textContent = "Playing";
       showPlayerControls(false);
     }).catch(() => {
-      showVideoError(`Press play to start ${ch.name}.`);
+      $("playState").textContent = "Ready";
+      showPlayerControls(true);
     });
   }
-  if (showToast) toast(`Opening ${ch.name}`);
 }
 
-function playMedia(item, showToast = true) {
+async function playMedia(item, showToast = true) {
   const title = item.title || item.name || "Selected title";
   state.currentMedia = { ...item, title };
   $("nowCategory").textContent = item.category || item.type || "Now Playing";
@@ -698,11 +790,10 @@ function playMedia(item, showToast = true) {
   $("favoriteButton").textContent = isFavorite(item.id) ? "Unfavorite" : "Favorite";
 
   const player = $("videoPlayer");
-  player.muted = false;
-  player.volume = 1;
+  applyPlayerVolume();
   player.poster = item.image || "";
   clearVideoError();
-  loadVideoSource(player, item.streamUrl || videoUrl);
+  await loadVideoSource(player, item.streamUrl || videoUrl);
   player.onerror = () => {
     showVideoError(`${title} is not available right now.`);
   };
@@ -731,22 +822,38 @@ function loadVideoSource(player, source) {
   player.load();
   if (!url) {
     showVideoError("No stream URL for this channel.");
-    return;
+    return Promise.resolve();
   }
   if (isHlsUrl(url) && window.Hls?.isSupported()) {
-    hlsPlayer = new window.Hls({ enableWorker: true, lowLatencyMode: true });
-    hlsPlayer.on(window.Hls.Events.ERROR, (_event, data) => {
-      if (!data?.fatal) return;
-      hlsPlayer.destroy();
-      hlsPlayer = null;
-      player.src = url;
-      player.load();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      hlsPlayer = new window.Hls({ enableWorker: true, lowLatencyMode: true });
+      hlsPlayer.on(window.Hls.Events.MANIFEST_PARSED, finish);
+      hlsPlayer.on(window.Hls.Events.ERROR, (_event, data) => {
+        if (!data?.fatal) return;
+        hlsPlayer.destroy();
+        hlsPlayer = null;
+        player.src = url;
+        player.load();
+        finish();
+      });
+      hlsPlayer.loadSource(url);
+      hlsPlayer.attachMedia(player);
+      setTimeout(finish, 1500);
     });
-    hlsPlayer.loadSource(url);
-    hlsPlayer.attachMedia(player);
   } else {
     player.src = url;
     player.load();
+    return new Promise((resolve) => {
+      if (player.readyState >= 1) resolve();
+      else player.addEventListener("loadedmetadata", resolve, { once: true });
+      setTimeout(resolve, 1000);
+    });
   }
 }
 
@@ -799,10 +906,11 @@ function surfChannel(direction) {
   const currentIndex = Math.max(0, channels.findIndex((ch) => ch.id === state.selectedChannelId));
   const next = channels[(currentIndex + direction + channels.length) % channels.length];
   state.selectedChannelId = next.id;
-  setView("live");
-  renderLive();
-  playSelectedChannel(true);
-  setTimeout(() => openPlayerFullscreen(false), 80);
+  renderSelectedChannel();
+  playChannel(next, false);
+  if (!(document.fullscreenElement || document.webkitFullscreenElement)) {
+    setTimeout(() => openPlayerFullscreen(false), 80);
+  }
 }
 
 function toggleSelectedFavorite() {

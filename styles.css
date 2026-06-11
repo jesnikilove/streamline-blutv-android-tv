@@ -486,17 +486,23 @@ p {
 .video-frame video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  background: #000;
 }
 
 .video-frame.wide-mode video {
-  object-fit: fill;
+  object-fit: cover;
 }
 
 .video-frame:fullscreen video,
 .video-frame:-webkit-full-screen video {
   object-fit: contain;
   background: #000;
+}
+
+.video-frame.wide-mode:fullscreen video,
+.video-frame.wide-mode:-webkit-full-screen video {
+  object-fit: cover;
 }
 
 .video-overlay {
@@ -540,6 +546,12 @@ p {
   color: var(--text);
   background: rgba(var(--section-rgb), 0.18);
   cursor: pointer;
+}
+
+.control-btn:disabled,
+.control-btn.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .control-btn:nth-child(1) {
@@ -609,7 +621,9 @@ p {
   border: 1px solid var(--line);
   background: rgba(24, 22, 48, 0.84);
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow: auto;
+  max-height: calc(100vh - 170px);
+  overscroll-behavior: contain;
 }
 
 .guide-left,
@@ -617,6 +631,9 @@ p {
   min-height: 48px;
   border-bottom: 1px solid var(--line);
   background: rgba(0, 0, 0, 0.18);
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 .guide-left {
@@ -665,6 +682,9 @@ p {
 .guide-channel {
   background: rgba(255, 255, 255, 0.04);
   font-weight: 800;
+  position: sticky;
+  left: 0;
+  z-index: 1;
 }
 
 .program-block {
