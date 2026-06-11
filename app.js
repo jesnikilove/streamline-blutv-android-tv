@@ -578,6 +578,11 @@ function bindNavigation() {
   document.addEventListener("keydown", (event) => {
     if ($("homeScreen").classList.contains("hidden")) return;
     if (isTypingField(document.activeElement)) return;
+    if (document.body.classList.contains("tv-player-open") && (event.key === "Backspace" || event.key === "Escape")) {
+      event.preventDefault();
+      exitPlayerFullscreen();
+      return;
+    }
     if (handlePlayerKeys(event)) return;
     if (handleTvFocusKeys(event)) return;
     if (event.key === "Backspace" || event.key === "Escape") {
@@ -723,6 +728,7 @@ function isTypingField(element) {
 }
 
 function setView(view) {
+  document.body.classList.remove("tv-player-open");
   state.view = view;
   $("homeScreen").dataset.activeView = view;
   document.querySelectorAll(".nav-item").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
@@ -804,6 +810,10 @@ function bindActions() {
 }
 
 async function toggleFullscreen() {
+  if (isTvApp() && document.body.classList.contains("tv-player-open")) {
+    await exitPlayerFullscreen();
+    return;
+  }
   if (state.view !== "live") setView("live");
   await openPlayerFullscreen(false);
 }
@@ -811,8 +821,10 @@ async function toggleFullscreen() {
 async function openPlayerFullscreen(showControls = false, forceVideo = false) {
   if (isTvApp()) {
     if (state.view !== "live") setView("live");
+    document.body.classList.add("tv-player-open");
     showPlayerControls(showControls);
     syncFullscreenButton();
+    $("videoFrame").focus?.();
     return;
   }
   try {
@@ -844,6 +856,12 @@ async function openPlayerFullscreen(showControls = false, forceVideo = false) {
 }
 
 async function exitPlayerFullscreen() {
+  if (isTvApp()) {
+    document.body.classList.remove("tv-player-open");
+    showPlayerControls(false);
+    syncFullscreenButton();
+    return;
+  }
   if (document.fullscreenElement && document.exitFullscreen) {
     await document.exitFullscreen();
   } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
@@ -854,7 +872,7 @@ async function exitPlayerFullscreen() {
 
 function syncFullscreenButton() {
   if (isTvApp()) {
-    $("fullscreenButton").textContent = "Player";
+    $("fullscreenButton").textContent = document.body.classList.contains("tv-player-open") ? "Exit Player" : "Player";
     return;
   }
   const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
@@ -1038,12 +1056,10 @@ function appendChannelRows(list, channels, start, size, token) {
     row.innerHTML = `<span class="row-title">${isFavorite(ch.id) ? "Star " : ""}${ch.name}</span><span class="row-sub">${ch.program}</span>`;
     row.addEventListener("focus", () => previewChannel(ch, { play: true }));
     row.addEventListener("click", () => {
-      const openingSelectedChannel = state.selectedChannelId === ch.id;
+      clearTimeout(channelPreviewTimer);
       previewChannel(ch, { play: false });
       playSelectedChannel(false);
-      if (openingSelectedChannel) {
-        setTimeout(() => openPlayerFullscreen(false), 80);
-      }
+      setTimeout(() => openPlayerFullscreen(false), 80);
     });
     fragment.appendChild(row);
   }
@@ -1701,7 +1717,7 @@ async function reloadProviderCatalog() {
   button.textContent = "Loading Catalog";
   try {
     await loadProviderCatalog(JSON.parse(payloadText));
-    renderAll();
+    setView("live");
     toast(`Loaded ${data.movies.length} movies and ${data.series.length} series`);
   } catch (error) {
     toast(error.message || "Catalog reload failed.");
