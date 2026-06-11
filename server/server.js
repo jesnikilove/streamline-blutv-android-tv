@@ -68,7 +68,8 @@ function setCors(res) {
 }
 
 function serveFile(req, res) {
-  const rawPath = req.url === "/" ? "/index.html" : req.url.split("?")[0];
+  const requestPath = req.url.split("?")[0];
+  const rawPath = requestPath === "/" ? "/index.html" : requestPath;
   const filePath = path.resolve(root, "." + decodeURIComponent(rawPath));
   if (!filePath.startsWith(root)) return sendJson(res, 403, { ok: false, message: "Forbidden" });
   fs.readFile(filePath, (error, data) => {
