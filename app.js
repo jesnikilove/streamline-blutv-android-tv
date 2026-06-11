@@ -47,8 +47,7 @@ const state = {
   wideMode: false,
   recording: null,
   controlsTimer: null,
-  playerVolume: Number(localStorage.getItem("streamlinePlayerVolume") || "1"),
-  playerMuted: localStorage.getItem("streamlinePlayerMuted") === "true"
+  seekTimer: null
 };
 
 let data = {
@@ -399,9 +398,7 @@ function bindActions() {
   $("rewindButton").addEventListener("click", () => seekPlayer(-15));
   $("playerPlayPause").addEventListener("click", togglePlayerPlayback);
   $("forwardButton").addEventListener("click", () => seekPlayer(30));
-  $("volumeDownButton").addEventListener("click", () => adjustVolume(-0.1));
-  $("muteButton").addEventListener("click", toggleMute);
-  $("volumeUpButton").addEventListener("click", () => adjustVolume(0.1));
+  $("seekBar").addEventListener("input", scrubPlayer);
   $("ccButton").addEventListener("click", toggleCaptions);
   $("wideButton").addEventListener("click", toggleWideMode);
   $("recordButton").addEventListener("click", toggleRecording);
@@ -436,11 +433,15 @@ async function toggleFullscreen() {
   await openPlayerFullscreen(false);
 }
 
-async function openPlayerFullscreen(showControls = false) {
+async function openPlayerFullscreen(showControls = false, forceVideo = false) {
   try {
     const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
-    if (!fullscreenElement) {
-      const target = $("videoFrame");
+    const target = $("videoFrame");
+    if (fullscreenElement && fullscreenElement !== target && forceVideo) {
+      await exitPlayerFullscreen();
+    }
+    const activeFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!activeFullscreen) {
       if (target.requestFullscreen) {
         await target.requestFullscreen();
       } else if (target.webkitRequestFullscreen) {
@@ -449,8 +450,10 @@ async function openPlayerFullscreen(showControls = false) {
         throw new Error("Fullscreen unsupported");
       }
       showPlayerControls(showControls);
-    } else {
+    } else if (!forceVideo) {
       await exitPlayerFullscreen();
+    } else {
+      showPlayerControls(showControls);
     }
     syncFullscreenButton();
   } catch (_error) {
@@ -480,11 +483,15 @@ function showPlayerControls(show) {
   $("videoFrame").classList.toggle("controls-open", show);
   $("controlMediaTitle").textContent = state.currentMedia?.title || $("nowTitle").textContent || "Paused";
   $("playerPlayPause").textContent = $("videoPlayer").paused ? "Play" : "Pause";
-  updateVolumeButtons();
   updatePlayerOptionStates();
   if (show) {
+    updateSeekBar();
+    clearInterval(state.seekTimer);
+    state.seekTimer = setInterval(updateSeekBar, 1000);
     $("playerPlayPause").focus();
     state.controlsTimer = setTimeout(() => showPlayerControls(false), 4500);
+  } else {
+    clearInterval(state.seekTimer);
   }
 }
 
@@ -493,6 +500,7 @@ function updatePlayerOptionStates() {
   const seekable = player.seekable?.length ? player.seekable.end(player.seekable.length - 1) - player.seekable.start(0) > 60 : false;
   $("rewindButton").disabled = !seekable;
   $("forwardButton").disabled = !seekable;
+  $("seekBar").disabled = !seekable;
   $("recordButton").disabled = !canRecordPlayer();
   $("ccButton").classList.toggle("disabled", !hasCaptionTracks());
 }
@@ -507,39 +515,10 @@ function togglePlayerPlayback() {
   }
 }
 
-function applyPlayerVolume() {
+function enableHardwareVolume() {
   const player = $("videoPlayer");
-  player.volume = Math.min(1, Math.max(0, state.playerVolume));
-  player.muted = state.playerMuted || player.volume === 0;
-  updateVolumeButtons();
-}
-
-function adjustVolume(delta) {
-  state.playerVolume = Math.min(1, Math.max(0, Math.round((state.playerVolume + delta) * 10) / 10));
-  if (state.playerVolume > 0) state.playerMuted = false;
-  savePlayerVolume();
-  applyPlayerVolume();
-  toast(`Volume ${Math.round(state.playerVolume * 100)}%`);
-  showPlayerControls(true);
-}
-
-function toggleMute() {
-  state.playerMuted = !state.playerMuted;
-  savePlayerVolume();
-  applyPlayerVolume();
-  toast(state.playerMuted ? "Muted" : `Volume ${Math.round(state.playerVolume * 100)}%`);
-  showPlayerControls(true);
-}
-
-function savePlayerVolume() {
-  localStorage.setItem("streamlinePlayerVolume", String(state.playerVolume));
-  localStorage.setItem("streamlinePlayerMuted", String(state.playerMuted));
-}
-
-function updateVolumeButtons() {
-  const player = $("videoPlayer");
-  const percent = Math.round((player.volume || state.playerVolume) * 100);
-  $("muteButton").textContent = player.muted ? "Unmute" : `Mute ${percent}%`;
+  player.muted = false;
+  player.volume = 1;
 }
 
 function seekPlayer(seconds) {
@@ -557,6 +536,32 @@ function seekPlayer(seconds) {
   }
   player.currentTime = nextTime;
   showPlayerControls(true);
+}
+
+function scrubPlayer() {
+  const player = $("videoPlayer");
+  if (!player.seekable?.length) return;
+  const start = player.seekable.start(0);
+  const end = player.seekable.end(player.seekable.length - 1);
+  const percent = Number($("seekBar").value) / 1000;
+  player.currentTime = start + ((end - start) * percent);
+  showPlayerControls(true);
+}
+
+function updateSeekBar() {
+  const player = $("videoPlayer");
+  if (!player.seekable?.length) {
+    $("seekBar").value = 0;
+    return;
+  }
+  const start = player.seekable.start(0);
+  const end = player.seekable.end(player.seekable.length - 1);
+  const span = end - start;
+  if (!Number.isFinite(span) || span <= 0) {
+    $("seekBar").value = 0;
+    return;
+  }
+  $("seekBar").value = Math.round(((player.currentTime - start) / span) * 1000);
 }
 
 function toggleCaptions() {
@@ -762,8 +767,8 @@ async function playChannel(ch, showToast) {
   if (!ch) return;
   state.currentMedia = { id: ch.id, title: ch.name, type: "Channel" };
   const player = $("videoPlayer");
-  applyPlayerVolume();
-  player.poster = ch.image;
+  enableHardwareVolume();
+  player.poster = "";
   clearVideoError();
   await loadVideoSource(player, ch.streamUrl);
   player.onerror = () => {
@@ -790,7 +795,7 @@ async function playMedia(item, showToast = true) {
   $("favoriteButton").textContent = isFavorite(item.id) ? "Unfavorite" : "Favorite";
 
   const player = $("videoPlayer");
-  applyPlayerVolume();
+  enableHardwareVolume();
   player.poster = item.image || "";
   clearVideoError();
   await loadVideoSource(player, item.streamUrl || videoUrl);
@@ -949,28 +954,26 @@ function renderGuide() {
     channelButton.type = "button";
     channelButton.className = "guide-channel focusable";
     channelButton.textContent = ch.name;
-    channelButton.addEventListener("click", () => {
-      state.selectedChannelId = ch.id;
-      renderSelectedChannel();
-      playChannel(ch, true);
-      setTimeout(() => openPlayerFullscreen(false), 80);
-    });
+    channelButton.addEventListener("click", () => openChannelFromGuide(ch));
     row.appendChild(channelButton);
     ch.guide.slice(0, 4).forEach((g, i) => {
       const block = document.createElement("button");
       block.type = "button";
       block.className = `program-block focusable ${i === 0 ? "now" : ""}`;
       block.innerHTML = `<strong>${g.title}</strong><span>${g.time}</span>`;
-      block.addEventListener("click", () => {
-        state.selectedChannelId = ch.id;
-        renderSelectedChannel();
-        playChannel(ch, true);
-        setTimeout(() => openPlayerFullscreen(false), 80);
-      });
+      block.addEventListener("click", () => openChannelFromGuide(ch));
       row.appendChild(block);
     });
     rows.appendChild(row);
   });
+}
+
+async function openChannelFromGuide(ch) {
+  state.selectedChannelId = ch.id;
+  setView("live");
+  renderSelectedChannel();
+  await playChannel(ch, false);
+  setTimeout(() => openPlayerFullscreen(false, true), 80);
 }
 
 function renderMovies() {

@@ -554,6 +554,15 @@ p {
   cursor: not-allowed;
 }
 
+.seek-bar {
+  width: 100%;
+  accent-color: var(--section);
+}
+
+.seek-bar:disabled {
+  opacity: 0.42;
+}
+
 .control-btn:nth-child(1) {
   background: rgba(49, 191, 97, 0.28);
 }
