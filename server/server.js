@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { Readable } = require("stream");
+const { spawn } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
 const port = Number(process.env.PORT || 4188);
@@ -48,6 +49,9 @@ http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url.startsWith("/api/stream-proxy")) {
       return proxyStreamAsset(req, res);
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/transcode-movie")) {
+      return transcodeMovie(req, res);
     }
     return serveFile(req, res);
   } catch (error) {
@@ -193,6 +197,7 @@ async function loadSeriesInfo(seriesId) {
       season: Number(seasonKey) || 1,
       episode: Number(ep.episode_num || index + 1),
       title: text(ep.title, `Episode ${index + 1}`),
+      container: text(ep.container_extension, "mp4").toLowerCase(),
       streamUrl: `${base}/series/${username}/${password}/${ep.id}.${ep.container_extension || "mp4"}`
     }));
     if (episodes.length) seasons.push({ season: Number(seasonKey) || 1, episodes });
@@ -291,6 +296,39 @@ async function proxyStreamAsset(req, res) {
   if (upstream.body) return Readable.fromWeb(upstream.body).pipe(res);
   const buffer = Buffer.from(await upstream.arrayBuffer());
   res.end(buffer);
+}
+
+function transcodeMovie(req, res) {
+  const requestUrl = new URL(req.url, `http://${host}:${port}`);
+  const movieUrl = requestUrl.searchParams.get("url");
+  if (!movieUrl) throw new Error("Missing movie URL.");
+
+  const ffmpeg = spawn("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-i", movieUrl,
+    "-map", "0:v:0",
+    "-map", "0:a:0?",
+    "-c:v", "copy",
+    "-c:a", "aac",
+    "-b:a", "160k",
+    "-movflags", "frag_keyframe+empty_moov+faststart",
+    "-f", "mp4",
+    "pipe:1"
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+
+  res.writeHead(200, {
+    "Content-Type": "video/mp4",
+    "Cache-Control": "no-store"
+  });
+  ffmpeg.stdout.pipe(res);
+  req.on("close", () => {
+    if (!ffmpeg.killed) ffmpeg.kill("SIGKILL");
+  });
+  ffmpeg.on("error", () => {
+    if (!res.headersSent) sendJson(res, 500, { ok: false, message: "Movie audio conversion failed." });
+    else res.end();
+  });
 }
 
 function rewritePlaylist(body, playlistUrl) {

@@ -853,7 +853,8 @@ async function playMedia(item, showToast = true) {
   enableHardwareVolume();
   player.poster = item.image || "";
   clearVideoError();
-  await loadVideoSource(player, item.streamUrl || videoUrl);
+  await loadVideoSource(player, playableMediaSource(item));
+  enableHardwareVolume();
   player.onerror = () => {
     showVideoError(`${title} is not available right now.`);
   };
@@ -870,6 +871,15 @@ async function playMedia(item, showToast = true) {
   $("miniGuide").innerHTML = "";
   if (showToast) toast(`Opening ${title}`);
   setTimeout(() => openPlayerFullscreen(false), 80);
+}
+
+function playableMediaSource(item) {
+  const url = item.streamUrl || videoUrl;
+  const source = `${item.container || ""} ${url}`.toLowerCase();
+  if (source.includes(".mkv") || source.includes("mkv")) {
+    return `/api/transcode-movie?url=${encodeURIComponent(url)}`;
+  }
+  return url;
 }
 
 function loadVideoSource(player, source) {
