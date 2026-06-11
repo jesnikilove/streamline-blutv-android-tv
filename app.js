@@ -1,6 +1,24 @@
 const videoUrl = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
 const gridLimit = 240;
+let hlsPlayer = null;
+
+const internationalCategoryTerms = [
+  "africa", "arabic", "argentina", "asia", "australia", "balkan", "brazil", "caribbean", "chile", "colombia",
+  "denmark", "dominican", "ecuador", "egypt", "france", "french", "germany", "greece", "haiti", "india",
+  "ireland", "irish", "italy", "jamaica", "latino", "mexico", "middle east", "morocco", "pakistan", "philippines",
+  "poland", "portugal", "portuguese", "romania", "russia", "spain", "spanish", "turkey", "uk ", "united kingdom",
+  "venezuela", "vietnam"
+];
+
+const englishSpeakingCategoryTerms = [
+  "united states", "usa", "us ", "uk ", "united kingdom", "canada", "ca ", "australia", "ireland", "irish",
+  "caribbean", "jamaica"
+];
+
 const smartCategoryRules = [
+  { name: "US Channels", special: "us" },
+  { name: "English Speaking", special: "english" },
+  { name: "International", special: "international" },
   { name: "Women", terms: ["women", "woman", "her", "own", "lifetime", "we tv", "cleo"] },
   { name: "Christmas", terms: ["christmas", "holiday", "xmas", "santa", "hallmark"] },
   { name: "Crime", terms: ["crime", "investigation", "mystery", "court", "law", "justice", "forensic"] },
@@ -122,8 +140,20 @@ function init() {
 
   if (localStorage.getItem("streamlineLoggedIn") === "true") {
     showHome();
+    restoreSavedProviderSession();
   } else {
     $("loginButton").focus();
+  }
+}
+
+async function restoreSavedProviderSession() {
+  const payloadText = sessionStorage.getItem("streamlineLastProviderPayload");
+  if (!payloadText || !state.usingProviderData) return;
+  try {
+    await loadProviderCatalog(JSON.parse(payloadText));
+    renderAll();
+  } catch (_error) {
+    toast("Use Change Login once to refresh the provider.");
   }
 }
 
@@ -216,11 +246,15 @@ function persistProviderCache(library) {
 }
 
 function buildLiveCategories(channels, existingCategories) {
-  const categories = ["All Channels", ...existingCategories.filter((cat) => cat !== "All Channels")];
+  const categories = ["All Channels"];
   smartCategoryRules.forEach((rule) => {
     if (!categories.includes(rule.name) && channels.some((ch) => matchesSmartCategory(ch, rule))) {
       categories.push(rule.name);
     }
+  });
+  existingCategories.forEach((cat) => {
+    if (cat === "All Channels" || categories.includes(cat) || isHiddenProviderCategory(cat)) return;
+    if (channels.some((ch) => ch.category === cat)) categories.push(cat);
   });
   return categories;
 }
@@ -528,12 +562,50 @@ function filteredChannels() {
 }
 
 function countChannels(cat) {
-  return cat === "All Channels" ? data.channels.length : data.channels.filter((ch) => ch.category === cat).length;
+  if (cat === "All Channels") return data.channels.length;
+  const smart = smartCategoryRules.find((rule) => rule.name === cat);
+  if (smart) return data.channels.filter((ch) => matchesSmartCategory(ch, smart)).length;
+  return data.channels.filter((ch) => ch.category === cat).length;
 }
 
 function matchesSmartCategory(channel, rule) {
   const haystack = normalizeSearch(`${channel.name} ${channel.category} ${channel.program}`);
+  if (rule.special === "international") return isInternationalChannel(channel) && !isUsChannel(channel);
+  if (rule.special === "english") return isEnglishSpeakingChannel(channel);
+  if (rule.special === "us") return isUsChannel(channel);
   return rule.terms.some((term) => haystack.includes(normalizeSearch(term)));
+}
+
+function isHiddenProviderCategory(category) {
+  return hasCategoryTerm(category, internationalCategoryTerms);
+}
+
+function isInternationalChannel(channel) {
+  return hasCategoryTerm(`${channel.category} ${channel.name}`, internationalCategoryTerms);
+}
+
+function isEnglishSpeakingChannel(channel) {
+  const value = `${channel.category} ${channel.name}`;
+  return isUsChannel(channel) || hasCategoryTerm(value, englishSpeakingCategoryTerms);
+}
+
+function isUsChannel(channel) {
+  const value = normalizeSearch(`${channel.category} ${channel.name}`);
+  if (value.includes("united states") || value.includes(" usa ") || value.startsWith("usa ")) return true;
+  if (value.includes(" us ") || value.startsWith("us ") || value.endsWith(" us")) return true;
+  if (value.includes("local") || value.includes("locals")) return true;
+  if (value.includes("nba") || value.includes("nfl") || value.includes("mlb") || value.includes("nhl")) return true;
+  if (value.includes("espn") || value.includes("fox ") || value.includes("nbc ") || value.includes("abc ") || value.includes("cbs ")) return true;
+  return !isInternationalChannel(channel);
+}
+
+function hasCategoryTerm(value, terms) {
+  const normalized = ` ${normalizeSearch(value)} `;
+  return terms.some((term) => {
+    const searchTerm = normalizeSearch(term);
+    if (searchTerm.length <= 3) return normalized.includes(` ${searchTerm} `);
+    return normalized.includes(` ${searchTerm} `) || normalized.includes(searchTerm);
+  });
 }
 
 function selectedChannel() {
@@ -566,10 +638,10 @@ function playSelectedChannel(showToast) {
   player.muted = false;
   player.volume = 1;
   player.poster = ch.image;
-  player.src = ch.streamUrl || videoUrl;
+  loadVideoSource(player, ch.streamUrl || videoUrl);
   player.onerror = () => {
     $("playState").textContent = "Preview";
-    player.src = videoUrl;
+    loadVideoSource(player, videoUrl);
     player.play().catch(() => {});
   };
   if ($("autoplayToggle")?.checked !== false) {
@@ -595,10 +667,10 @@ function playMedia(item, showToast = true) {
   player.muted = false;
   player.volume = 1;
   player.poster = item.image || "";
-  player.src = item.streamUrl || videoUrl;
+  loadVideoSource(player, item.streamUrl || videoUrl);
   player.onerror = () => {
     $("playState").textContent = "Preview";
-    player.src = videoUrl;
+    loadVideoSource(player, videoUrl);
     player.play().catch(() => {});
   };
   player.play().then(() => {
@@ -613,6 +685,35 @@ function playMedia(item, showToast = true) {
   $("miniGuide").innerHTML = "";
   if (showToast) toast(`Opening ${title}`);
   setTimeout(() => openPlayerFullscreen(false), 80);
+}
+
+function loadVideoSource(player, source) {
+  const url = source || videoUrl;
+  if (hlsPlayer) {
+    hlsPlayer.destroy();
+    hlsPlayer = null;
+  }
+  player.removeAttribute("src");
+  player.load();
+  if (isHlsUrl(url) && window.Hls?.isSupported()) {
+    hlsPlayer = new window.Hls({ enableWorker: true, lowLatencyMode: true });
+    hlsPlayer.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (!data?.fatal) return;
+      hlsPlayer.destroy();
+      hlsPlayer = null;
+      player.src = url;
+      player.load();
+    });
+    hlsPlayer.loadSource(url);
+    hlsPlayer.attachMedia(player);
+  } else {
+    player.src = url;
+    player.load();
+  }
+}
+
+function isHlsUrl(url) {
+  return /\.m3u8($|\?)/i.test(String(url || ""));
 }
 
 async function loadChannelGuide(ch) {

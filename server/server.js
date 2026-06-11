@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { Readable } = require("stream");
 
 const root = path.resolve(__dirname, "..");
 const port = Number(process.env.PORT || 4188);
@@ -15,6 +16,8 @@ const mime = {
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".m3u8": "application/vnd.apple.mpegurl",
+  ".ts": "video/mp2t",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -39,6 +42,12 @@ http.createServer(async (req, res) => {
       const body = await readJson(req);
       const result = await loadChannelEpg(body.streamId, body.streamUrl);
       return sendJson(res, 200, { ok: true, data: result });
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/stream/live/")) {
+      return proxyLiveStream(req, res);
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/stream-proxy")) {
+      return proxyStreamAsset(req, res);
     }
     return serveFile(req, res);
   } catch (error) {
@@ -109,7 +118,7 @@ async function loadXtream({ server, username, password }) {
     program: "Live now",
     description: text(item.name, "Live channel"),
     image: text(item.stream_icon, ""),
-    streamUrl: `${base}/live/${username}/${password}/${item.stream_id}.m3u8`,
+    streamUrl: `/api/stream/live/${encodeURIComponent(item.stream_id)}.m3u8`,
     guide: demoGuide("Live now")
   }));
 
@@ -249,6 +258,50 @@ function readLimit(value) {
 
 function applyLimit(items, limit) {
   return limit > 0 ? items.slice(0, limit) : items;
+}
+
+async function proxyLiveStream(req, res) {
+  if (!providerSession.base) throw new Error("Load your provider before playing live TV.");
+  const requestUrl = new URL(req.url, `http://${host}:${port}`);
+  const match = requestUrl.pathname.match(/^\/api\/stream\/live\/([^/]+)\.m3u8$/);
+  if (!match) throw new Error("Missing stream id.");
+  const streamId = decodeURIComponent(match[1]);
+  const { base, username, password } = providerSession;
+  const upstreamUrl = `${base}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.m3u8`;
+  const playlist = await fetchText(upstreamUrl);
+  res.writeHead(200, {
+    "Content-Type": "application/vnd.apple.mpegurl",
+    "Cache-Control": "no-store"
+  });
+  res.end(rewritePlaylist(playlist, upstreamUrl));
+}
+
+async function proxyStreamAsset(req, res) {
+  const requestUrl = new URL(req.url, `http://${host}:${port}`);
+  const assetUrl = requestUrl.searchParams.get("url");
+  if (!assetUrl) throw new Error("Missing stream asset.");
+  const upstream = await fetch(assetUrl, { headers: { "User-Agent": "StreamlineBluTV/1.0" } });
+  if (!upstream.ok) throw new Error(`Provider returned ${upstream.status}`);
+  const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+  res.writeHead(upstream.status, {
+    "Content-Type": contentType,
+    "Cache-Control": "no-store"
+  });
+  if (upstream.body) return Readable.fromWeb(upstream.body).pipe(res);
+  const buffer = Buffer.from(await upstream.arrayBuffer());
+  res.end(buffer);
+}
+
+function rewritePlaylist(body, playlistUrl) {
+  return String(body || "").split(/\r?\n/).map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+    if (trimmed.startsWith("#")) {
+      return line.replace(/URI="([^"]+)"/g, (_match, url) => `URI="/api/stream-proxy?url=${encodeURIComponent(new URL(url, playlistUrl).toString())}"`);
+    }
+    const absolute = new URL(trimmed, playlistUrl).toString();
+    return `/api/stream-proxy?url=${encodeURIComponent(absolute)}`;
+  }).join("\n");
 }
 
 async function fetchJson(url) {
