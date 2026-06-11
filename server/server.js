@@ -298,24 +298,31 @@ async function proxyStreamAsset(req, res) {
   res.end(buffer);
 }
 
-function transcodeMovie(req, res) {
+async function transcodeMovie(req, res) {
   const requestUrl = new URL(req.url, `http://${host}:${port}`);
   const movieUrl = requestUrl.searchParams.get("url");
   if (!movieUrl) throw new Error("Missing movie URL.");
+  const audioMap = await preferredAudioMap(movieUrl);
 
-  const ffmpeg = spawn("ffmpeg", [
+  const args = [
     "-hide_banner",
     "-loglevel", "error",
     "-i", movieUrl,
     "-map", "0:v:0",
-    "-map", "0:a:0?",
+  ];
+  if (audioMap) args.push("-map", audioMap);
+  else args.push("-an");
+  args.push(
     "-c:v", "copy",
     "-c:a", "aac",
     "-b:a", "160k",
+    "-metadata:s:a:0", "language=eng",
     "-movflags", "frag_keyframe+empty_moov+faststart",
     "-f", "mp4",
     "pipe:1"
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+  );
+
+  const ffmpeg = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
 
   res.writeHead(200, {
     "Content-Type": "video/mp4",
@@ -328,6 +335,38 @@ function transcodeMovie(req, res) {
   ffmpeg.on("error", () => {
     if (!res.headersSent) sendJson(res, 500, { ok: false, message: "Movie audio conversion failed." });
     else res.end();
+  });
+}
+
+function preferredAudioMap(movieUrl) {
+  return new Promise((resolve) => {
+    const ffprobe = spawn("ffprobe", [
+      "-v", "error",
+      "-show_entries", "stream=index,codec_type:stream_tags=language,title",
+      "-of", "json",
+      movieUrl
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+    let output = "";
+    ffprobe.stdout.on("data", chunk => {
+      output += chunk;
+      if (output.length > 1024 * 1024) ffprobe.kill("SIGKILL");
+    });
+    ffprobe.on("close", () => {
+      try {
+        const streams = JSON.parse(output || "{}").streams || [];
+        const audio = streams.filter(stream => stream.codec_type === "audio");
+        const english = audio.find((stream) => {
+          const language = String(stream.tags?.language || "").toLowerCase();
+          const title = String(stream.tags?.title || "").toLowerCase();
+          return language === "eng" || language === "en" || title.includes("english");
+        });
+        const selected = english || audio[0];
+        resolve(selected ? `0:${selected.index}` : "");
+      } catch (_error) {
+        resolve("0:a:0?");
+      }
+    });
+    ffprobe.on("error", () => resolve("0:a:0?"));
   });
 }
 
