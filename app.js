@@ -11,6 +11,7 @@ let liveRenderToken = 0;
 let cacheSaveTimer = null;
 let searchRenderFrame = null;
 let providerSessionReady = false;
+let channelPreviewTimer = null;
 
 const libraryIndex = {
   channelCategoryMap: new Map(),
@@ -516,10 +517,10 @@ function setLoginStatus(message) {
 function showHome() {
   $("loginScreen").classList.add("hidden");
   $("homeScreen").classList.remove("hidden");
-  $("homeScreen").dataset.activeView = state.view;
+  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   $("settingsProvider").textContent = localStorage.getItem("streamlineProviderName") || "Demo Provider";
   updateCacheInfo();
-  renderLive();
+  setView("live");
   if (!state.usingProviderData || providerSessionReady) playSelectedChannel(false);
   document.querySelector(".nav-item.active").focus();
 }
@@ -566,6 +567,7 @@ function handlePlayerKeys(event) {
 
 function handleTvFocusKeys(event) {
   if (!isTvApp() || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return false;
+  if (handleLiveDirectionalFocus(event)) return true;
   const focusables = visibleFocusables();
   if (!focusables.length) return false;
   const current = document.activeElement;
@@ -597,7 +599,66 @@ function handleTvFocusKeys(event) {
   event.preventDefault();
   candidates[0].item.focus();
   candidates[0].item.scrollIntoView({ block: "nearest", inline: "nearest" });
+  handleFocusedLiveItem(candidates[0].item);
   return true;
+}
+
+function handleLiveDirectionalFocus(event) {
+  if (state.view !== "live") return false;
+  const current = document.activeElement;
+  const inCategories = $("liveCategories").contains(current);
+  const inChannels = $("channelList").contains(current);
+  if (!inCategories && !inChannels) return false;
+
+  if (inCategories && event.key === "ArrowRight") {
+    event.preventDefault();
+    return focusActiveLiveRow("channelList", "channelId", state.selectedChannelId);
+  }
+  if (inChannels && event.key === "ArrowLeft") {
+    event.preventDefault();
+    return focusActiveLiveRow("liveCategories", "category", state.category);
+  }
+  if ((inCategories || inChannels) && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    event.preventDefault();
+    const containerId = inCategories ? "liveCategories" : "channelList";
+    const rows = [...$(containerId).querySelectorAll(".list-row")];
+    if (!rows.length) return true;
+    const currentIndex = Math.max(0, rows.indexOf(current));
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    const next = rows[(currentIndex + direction + rows.length) % rows.length];
+    next.focus();
+    next.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+    handleFocusedLiveItem(next);
+    return true;
+  }
+  return false;
+}
+
+function focusActiveLiveRow(containerId, dataKey, value) {
+  const attr = dataKey.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+  const row = $(`${containerId}`).querySelector(`[data-${attr}="${cssEscape(value)}"]`) || $(`${containerId}`).querySelector(".list-row");
+  if (!row) return true;
+  row.focus();
+  row.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+  handleFocusedLiveItem(row);
+  return true;
+}
+
+function cssEscape(value) {
+  return String(value || "").replace(/["\\]/g, "\\$&");
+}
+
+function handleFocusedLiveItem(item) {
+  if (state.view !== "live") return;
+  const category = item.dataset?.category;
+  const channelId = item.dataset?.channelId;
+  if (category) {
+    selectLiveCategory(category);
+    return;
+  }
+  if (channelId) {
+    previewChannelById(channelId, { play: true });
+  }
 }
 
 function visibleFocusables() {
@@ -682,8 +743,11 @@ function bindActions() {
   $("searchInput").addEventListener("input", scheduleSearchRender);
   $("changeLogin").addEventListener("click", () => {
     localStorage.removeItem("streamlineLoggedIn");
+    clearTimeout(channelPreviewTimer);
+    $("videoPlayer").pause();
     $("homeScreen").classList.add("hidden");
     $("loginScreen").classList.remove("hidden");
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     $("loginButton").focus();
   });
   $("reloadProvider").addEventListener("click", reloadProviderCatalog);
@@ -891,29 +955,33 @@ function renderCurrentView() {
 }
 
 function renderLive() {
-  const token = ++liveRenderToken;
+  renderLiveCategories();
+  renderChannelList();
+  renderSelectedChannel();
+}
+
+function renderLiveCategories() {
   const categoryBox = $("liveCategories");
   categoryBox.innerHTML = "";
   data.categories.forEach((cat) => {
     const row = document.createElement("button");
     row.type = "button";
+    row.dataset.category = cat;
     row.className = "list-row focusable" + (state.category === cat ? " active" : "");
     row.innerHTML = `<span class="row-title">${cat}</span><span class="row-sub">${countChannels(cat)} channels</span>`;
-    row.addEventListener("click", () => {
-      state.category = cat;
-      $("sectionTitle").textContent = cat;
-      renderLive();
-    });
+    row.addEventListener("focus", () => selectLiveCategory(cat));
+    row.addEventListener("click", () => selectLiveCategory(cat));
     categoryBox.appendChild(row);
   });
+}
 
+function renderChannelList() {
+  const token = ++liveRenderToken;
   const channels = filteredChannels();
   if (!channels.some((ch) => ch.id === state.selectedChannelId) && channels[0]) state.selectedChannelId = channels[0].id;
   const list = $("channelList");
   list.innerHTML = "";
   appendChannelRows(list, channels, 0, liveInitialLimit, token);
-
-  renderSelectedChannel();
 }
 
 function appendChannelRows(list, channels, start, size, token) {
@@ -924,12 +992,13 @@ function appendChannelRows(list, channels, start, size, token) {
     const ch = channels[index];
     const row = document.createElement("button");
     row.type = "button";
+    row.dataset.channelId = ch.id;
     row.className = "list-row focusable" + (ch.id === state.selectedChannelId ? " active" : "");
     row.innerHTML = `<span class="row-title">${isFavorite(ch.id) ? "Star " : ""}${ch.name}</span><span class="row-sub">${ch.program}</span>`;
+    row.addEventListener("focus", () => previewChannel(ch, { play: true }));
     row.addEventListener("click", () => {
       const openingSelectedChannel = state.selectedChannelId === ch.id;
-      state.selectedChannelId = ch.id;
-      renderLive();
+      previewChannel(ch, { play: false });
       playSelectedChannel(false);
       if (openingSelectedChannel) {
         setTimeout(() => openPlayerFullscreen(false), 80);
@@ -941,6 +1010,48 @@ function appendChannelRows(list, channels, start, size, token) {
   if (end < channels.length) {
     scheduleIdle(() => appendChannelRows(list, channels, end, liveChunkSize, token));
   }
+}
+
+function selectLiveCategory(cat) {
+  if (!cat || state.category === cat) return;
+  clearTimeout(channelPreviewTimer);
+  state.category = cat;
+  $("sectionTitle").textContent = cat;
+  updateActiveRows("liveCategories", "category", cat);
+  renderChannelList();
+  renderSelectedChannel({ loadGuide: false });
+  const firstChannel = selectedChannel();
+  if (firstChannel) scheduleChannelPreview(firstChannel);
+}
+
+function previewChannelById(channelId, options = {}) {
+  const channel = data.channels.find((ch) => ch.id === channelId);
+  if (channel) previewChannel(channel, options);
+}
+
+function previewChannel(ch, options = {}) {
+  if (!ch) return;
+  state.selectedChannelId = ch.id;
+  updateActiveRows("channelList", "channelId", ch.id);
+  renderSelectedChannel({ loadGuide: false });
+  if (options.play) scheduleChannelPreview(ch);
+}
+
+function scheduleChannelPreview(ch) {
+  clearTimeout(channelPreviewTimer);
+  channelPreviewTimer = setTimeout(() => {
+    if (state.view === "live" && state.selectedChannelId === ch.id) {
+      loadChannelGuide(ch);
+      playChannel(ch, false);
+    }
+  }, 320);
+}
+
+function updateActiveRows(containerId, dataKey, value) {
+  const attr = dataKey.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+  document.querySelectorAll(`#${containerId} .list-row`).forEach((row) => {
+    row.classList.toggle("active", row.dataset[dataKey] === value || row.getAttribute(`data-${attr}`) === value);
+  });
 }
 
 function filteredChannels() {
@@ -1011,7 +1122,8 @@ function selectedChannel() {
   return data.channels.find((ch) => ch.id === state.selectedChannelId) || data.channels[0];
 }
 
-function renderSelectedChannel() {
+function renderSelectedChannel(options = {}) {
+  const loadGuide = options.loadGuide !== false;
   const ch = selectedChannel();
   if (!ch) return;
   $("nowCategory").textContent = ch.category;
@@ -1028,7 +1140,7 @@ function renderSelectedChannel() {
     row.addEventListener("click", () => playChannel(ch, true));
     guide.appendChild(row);
   });
-  loadChannelGuide(ch);
+  if (loadGuide) loadChannelGuide(ch);
 }
 
 function playSelectedChannel(showToast) {

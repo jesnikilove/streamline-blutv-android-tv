@@ -52,6 +52,10 @@ input {
     linear-gradient(90deg, rgba(12, 10, 28, 0.96), rgba(24, 20, 54, 0.86));
 }
 
+.stack-list {
+  scroll-behavior: smooth;
+}
+
 .login-screen {
   min-height: 100vh;
   display: grid;
@@ -1004,6 +1008,22 @@ p {
 
 body.tv-app .tv-screen {
   grid-template-columns: 170px minmax(0, 1fr);
+}
+
+body.tv-app .login-screen {
+  min-height: 100vh;
+  grid-template-columns: minmax(360px, 1fr) minmax(360px, 480px);
+  gap: 42px;
+  align-items: center;
+  padding: 36px;
+}
+
+body.tv-app .brand-panel h1 {
+  font-size: 46px;
+}
+
+body.tv-app .brand-panel p {
+  font-size: 18px;
 }
 
 body.tv-app .rail {
