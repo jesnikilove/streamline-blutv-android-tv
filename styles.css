@@ -1024,7 +1024,13 @@ p {
 
 body.tv-app .tv-screen {
   grid-template-columns: 170px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+}
+
+body.tv-app {
+  height: 100vh;
+  overflow: hidden;
 }
 
 body.tv-app .login-screen {
@@ -1065,7 +1071,7 @@ body.tv-app .brand-panel .brand-mark {
 }
 
 body.tv-app .rail {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
   grid-template-columns: 1fr;
   gap: 16px;
@@ -1083,30 +1089,44 @@ body.tv-app .nav-item {
 body.tv-app .live-layout {
   grid-template-columns: 210px 280px minmax(380px, 1fr);
   gap: 14px;
+  min-height: 0;
+  height: 100%;
 }
 
 body.tv-app .stack-list {
-  height: calc(100vh - 170px);
+  height: 100%;
   max-height: none;
 }
 
 body.tv-app .topbar {
   padding: 18px 22px;
+  height: 86px;
+  margin-bottom: 14px;
 }
 
 body.tv-app .main-pane {
   padding: 18px;
+  height: 100vh;
+  overflow: hidden;
 }
 
 body.tv-app .view.active {
-  min-height: calc(100vh - 118px);
+  height: calc(100vh - 118px);
+  min-height: 0;
+  overflow: auto;
+}
+
+body.tv-app #viewLive.active {
+  overflow: hidden;
 }
 
 body.tv-app .settings-grid {
-  min-height: calc(100vh - 118px);
+  min-height: 0;
+  height: 100%;
   grid-template-columns: repeat(2, minmax(280px, 1fr));
   grid-auto-rows: minmax(170px, auto);
   align-content: start;
+  overflow: auto;
 }
 
 body.tv-app .settings-login-panel {
@@ -1119,6 +1139,62 @@ body.tv-app .compact-form {
 
 body.tv-app .list-row {
   min-height: 50px;
+}
+
+body.tv-app .chip {
+  flex: 0 0 130px;
+  width: 130px;
+  min-height: 50px;
+  text-align: center;
+}
+
+body.tv-app .chip-row {
+  max-width: 100%;
+}
+
+body.tv-app .poster-grid {
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 12px;
+}
+
+body.tv-app .movie-detail {
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+body.tv-app .movie-backdrop {
+  min-height: 150px;
+}
+
+body.tv-app .movie-copy h3 {
+  font-size: 24px;
+  margin-bottom: 6px;
+}
+
+body.tv-app .movie-copy p {
+  margin-bottom: 10px;
+}
+
+body.tv-app .settings-card {
+  min-height: 170px;
+}
+
+body.tv-app .settings-card .primary-btn,
+body.tv-app .settings-card .ghost-btn {
+  width: 100%;
+  min-height: 50px;
+}
+
+body.tv-app .inline-actions .primary-btn,
+body.tv-app .inline-actions .ghost-btn {
+  width: 130px;
+  flex: 0 0 130px;
+}
+
+body.tv-app .guide-grid {
+  max-height: 100%;
 }
 
 body.tv-app.tv-player-open .tv-screen {

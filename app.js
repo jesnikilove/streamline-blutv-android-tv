@@ -1278,7 +1278,7 @@ function scheduleChannelPreview(ch) {
         toast("Provider is still waking up.");
         return;
       }
-      playChannel(ch, false);
+      playChannel(ch, false, { preview: true });
     }
   }, 320);
 }
@@ -1384,8 +1384,9 @@ function playSelectedChannel(showToast) {
   playChannel(ch, showToast);
 }
 
-async function playChannel(ch, showToast) {
+async function playChannel(ch, showToast, options = {}) {
   if (!ch) return;
+  const preview = !!options.preview;
   const requestId = ++playbackRequestId;
   try {
     const ready = await ensureProviderSessionReady();
@@ -1405,16 +1406,16 @@ async function playChannel(ch, showToast) {
   clearVideoError();
   await loadVideoSource(player, ch.streamUrl);
   player.onerror = () => {
-    if (requestId === playbackRequestId) showVideoError(`${ch.name} is not available right now.`);
+    if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} is not available right now.`);
   };
   if ($("autoplayToggle")?.checked !== false) {
-    $("playState").textContent = "Loading";
+    $("playState").textContent = preview ? "Preview" : "Loading";
     player.play().then(() => {
       if (requestId !== playbackRequestId) return;
-      $("playState").textContent = "Playing";
+      $("playState").textContent = preview ? "Preview" : "Playing";
       showPlayerControls(false);
     }).catch(() => {
-      if (requestId === playbackRequestId) showVideoError(`${ch.name} could not start.`);
+      if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} could not start.`);
     });
   }
 }
