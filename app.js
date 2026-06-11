@@ -120,6 +120,7 @@ function init() {
   if (cache) {
     try {
       data = JSON.parse(cache);
+      repairChannelGuides(data.channels || []);
       data.categories = buildLiveCategories(data.channels || [], data.categories || []);
       state.usingProviderData = true;
       state.category = data.categories[0] || state.category;
@@ -224,6 +225,7 @@ async function loadProviderCatalog(payload) {
 
   data = parsed.data;
   state.usingProviderData = true;
+  repairChannelGuides(data.channels || []);
   data.categories = buildLiveCategories(data.channels, data.categories);
   state.category = data.categories[0] || "All Channels";
   state.selectedChannelId = data.channels[0]?.id || "";
@@ -257,6 +259,32 @@ function buildLiveCategories(channels, existingCategories) {
     if (channels.some((ch) => ch.category === cat)) categories.push(cat);
   });
   return categories;
+}
+
+function repairChannelGuides(channels) {
+  channels.forEach((ch) => {
+    if (!ch.guide?.length || isGenericGuide(ch.guide)) {
+      ch.guide = fallbackGuideForChannel(ch);
+      ch.program = ch.program && ch.program !== "Live now" ? ch.program : ch.guide[0].title;
+      ch.description = ch.description || ch.name;
+    }
+  });
+}
+
+function isGenericGuide(guide) {
+  const titles = guide.map((item) => item.title).join(" ").toLowerCase();
+  return titles.includes("up next") || titles.includes("prime block") || titles.includes("late night") || titles === "live now";
+}
+
+function fallbackGuideForChannel(ch) {
+  const title = ch.program && ch.program !== "Live now" ? ch.program : ch.name;
+  const category = ch.category || "Live TV";
+  return [
+    { time: "Now", title },
+    { time: "Next", title: `${title} continues` },
+    { time: "Later", title: `${category} programming` },
+    { time: "Tonight", title }
+  ];
 }
 
 function setLoginStatus(message) {
@@ -622,9 +650,11 @@ function renderSelectedChannel() {
   const guide = $("miniGuide");
   guide.innerHTML = "";
   ch.guide.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "guide-item";
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "guide-item focusable";
     row.innerHTML = `<span>${item.time}</span><span>${item.title}</span>`;
+    row.addEventListener("click", () => playChannel(ch, true));
     guide.appendChild(row);
   });
   loadChannelGuide(ch);
@@ -632,24 +662,28 @@ function renderSelectedChannel() {
 
 function playSelectedChannel(showToast) {
   const ch = selectedChannel();
+  playChannel(ch, showToast);
+}
+
+function playChannel(ch, showToast) {
   if (!ch) return;
   state.currentMedia = { id: ch.id, title: ch.name, type: "Channel" };
   const player = $("videoPlayer");
   player.muted = false;
   player.volume = 1;
   player.poster = ch.image;
-  loadVideoSource(player, ch.streamUrl || videoUrl);
+  clearVideoError();
+  loadVideoSource(player, ch.streamUrl);
   player.onerror = () => {
-    $("playState").textContent = "Preview";
-    loadVideoSource(player, videoUrl);
-    player.play().catch(() => {});
+    showVideoError(`${ch.name} is not available right now.`);
   };
   if ($("autoplayToggle")?.checked !== false) {
+    $("playState").textContent = "Loading";
     player.play().then(() => {
       $("playState").textContent = "Playing";
       showPlayerControls(false);
     }).catch(() => {
-      $("playState").textContent = "Preview";
+      showVideoError(`Press play to start ${ch.name}.`);
     });
   }
   if (showToast) toast(`Opening ${ch.name}`);
@@ -667,17 +701,17 @@ function playMedia(item, showToast = true) {
   player.muted = false;
   player.volume = 1;
   player.poster = item.image || "";
+  clearVideoError();
   loadVideoSource(player, item.streamUrl || videoUrl);
   player.onerror = () => {
-    $("playState").textContent = "Preview";
-    loadVideoSource(player, videoUrl);
-    player.play().catch(() => {});
+    showVideoError(`${title} is not available right now.`);
   };
+  $("playState").textContent = "Loading";
   player.play().then(() => {
     $("playState").textContent = "Playing";
     showPlayerControls(false);
   }).catch(() => {
-    $("playState").textContent = "Preview";
+    showVideoError(`Press play to start ${title}.`);
   });
   setView("live");
   $("sectionKicker").textContent = item.type || "Video";
@@ -688,13 +722,17 @@ function playMedia(item, showToast = true) {
 }
 
 function loadVideoSource(player, source) {
-  const url = source || videoUrl;
+  const url = source || "";
   if (hlsPlayer) {
     hlsPlayer.destroy();
     hlsPlayer = null;
   }
   player.removeAttribute("src");
   player.load();
+  if (!url) {
+    showVideoError("No stream URL for this channel.");
+    return;
+  }
   if (isHlsUrl(url) && window.Hls?.isSupported()) {
     hlsPlayer = new window.Hls({ enableWorker: true, lowLatencyMode: true });
     hlsPlayer.on(window.Hls.Events.ERROR, (_event, data) => {
@@ -710,6 +748,18 @@ function loadVideoSource(player, source) {
     player.src = url;
     player.load();
   }
+}
+
+function showVideoError(message) {
+  const player = $("videoPlayer");
+  $("playState").textContent = "Unavailable";
+  player.removeAttribute("src");
+  player.load();
+  toast(message);
+}
+
+function clearVideoError() {
+  $("playState").textContent = "Loading";
 }
 
 function isHlsUrl(url) {
@@ -778,13 +828,39 @@ function isFavorite(id) {
 }
 
 function renderGuide() {
-  $("guideTimes").innerHTML = ["7:00 PM", "7:30 PM", "8:00 PM", "9:00 PM"].map((t) => `<div>${t}</div>`).join("");
+  const channels = filteredChannels().slice(0, 80);
+  channels.slice(0, 24).forEach(loadChannelGuide);
+  const times = (channels.find((ch) => ch.guide?.length)?.guide || []).slice(0, 4).map((item) => item.time);
+  $("guideTimes").innerHTML = (times.length ? times : ["Now", "Next", "Later", "Tonight"]).map((t) => `<div>${t}</div>`).join("");
   const rows = $("guideRows");
   rows.innerHTML = "";
-  data.channels.forEach((ch) => {
+  channels.forEach((ch) => {
     const row = document.createElement("div");
     row.className = "guide-row";
-    row.innerHTML = `<div class="guide-channel">${ch.name}</div>` + ch.guide.map((g, i) => `<div class="program-block ${i === 0 ? "now" : ""}"><strong>${g.title}</strong><span>${g.time}</span></div>`).join("");
+    const channelButton = document.createElement("button");
+    channelButton.type = "button";
+    channelButton.className = "guide-channel focusable";
+    channelButton.textContent = ch.name;
+    channelButton.addEventListener("click", () => {
+      state.selectedChannelId = ch.id;
+      renderSelectedChannel();
+      playChannel(ch, true);
+      setTimeout(() => openPlayerFullscreen(false), 80);
+    });
+    row.appendChild(channelButton);
+    ch.guide.slice(0, 4).forEach((g, i) => {
+      const block = document.createElement("button");
+      block.type = "button";
+      block.className = `program-block focusable ${i === 0 ? "now" : ""}`;
+      block.innerHTML = `<strong>${g.title}</strong><span>${g.time}</span>`;
+      block.addEventListener("click", () => {
+        state.selectedChannelId = ch.id;
+        renderSelectedChannel();
+        playChannel(ch, true);
+        setTimeout(() => openPlayerFullscreen(false), 80);
+      });
+      row.appendChild(block);
+    });
     rows.appendChild(row);
   });
 }

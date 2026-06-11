@@ -595,6 +595,9 @@ p {
   border-radius: var(--radius);
   border: 1px solid rgba(var(--section-rgb), 0.18);
   background: rgba(var(--section-rgb), 0.09);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
 
 .guide-item span:first-child {
@@ -653,6 +656,10 @@ p {
   display: grid;
   align-content: center;
   padding: 10px 14px;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
 
 .guide-channel {
@@ -662,11 +669,21 @@ p {
 
 .program-block {
   border-left: 1px solid var(--line);
-  color: var(--text);
+  background: transparent;
 }
 
 .program-block.now {
   background: linear-gradient(135deg, rgba(var(--section-rgb), 0.22), rgba(128, 72, 255, 0.12));
+}
+
+.guide-channel:hover,
+.program-block:hover,
+.guide-item:hover,
+.guide-channel:focus,
+.program-block:focus,
+.guide-item:focus {
+  outline: 2px solid rgba(var(--section-rgb), 0.78);
+  outline-offset: -2px;
 }
 
 .content-toolbar {

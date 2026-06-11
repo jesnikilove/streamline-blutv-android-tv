@@ -115,11 +115,11 @@ async function loadXtream({ server, username, password }) {
     streamId: item.stream_id,
     name: text(item.name, `Channel ${index + 1}`),
     category: liveMap[item.category_id] || "Live TV",
-    program: "Live now",
+    program: text(item.name, "Live channel"),
     description: text(item.name, "Live channel"),
     image: text(item.stream_icon, ""),
     streamUrl: `/api/stream/live/${encodeURIComponent(item.stream_id)}.m3u8`,
-    guide: demoGuide("Live now")
+    guide: demoGuide(text(item.name, "Live channel"), liveMap[item.category_id] || "Live TV")
   }));
 
   const movies = applyLimit(asArray(vodStreams), vodLimit).map((item, index) => ({
@@ -214,7 +214,7 @@ function normalizeLibrary(channels, movies, series) {
     channels: channels.map((item, index) => ({
       ...item,
       image: item.image || fallbackImage(index),
-      guide: item.guide && item.guide.length ? item.guide : demoGuide(item.program || "Live now")
+      guide: item.guide && item.guide.length ? item.guide : demoGuide(item.program || item.name || "Live channel", item.category || "Live TV")
     })),
     movieTabs,
     movies: movies.map((item, index) => ({ ...item, image: item.image || fallbackPoster(index) })),
@@ -238,11 +238,11 @@ function parseM3u(body) {
         id: `m3u-${channels.length + 1}`,
         name: current.name,
         category: current.category,
-        program: "Live now",
+        program: current.name,
         description: current.name,
         image: current.image,
         streamUrl: line.trim(),
-        guide: demoGuide("Live now")
+        guide: demoGuide(current.name, current.category)
       });
       current = null;
     }
@@ -377,12 +377,13 @@ function attr(line, key) {
   return match ? match[1] : "";
 }
 
-function demoGuide(title) {
+function demoGuide(title, category = "Live TV") {
+  const label = title || category || "Live channel";
   return [
-    { time: "7:00 PM", title },
-    { time: "7:30 PM", title: "Up Next" },
-    { time: "8:00 PM", title: "Prime Block" },
-    { time: "9:00 PM", title: "Late Night" }
+    { time: "Now", title: label },
+    { time: "Next", title: `${label} continues` },
+    { time: "Later", title: `${category} programming` },
+    { time: "Tonight", title: label }
   ];
 }
 
