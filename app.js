@@ -1507,7 +1507,7 @@ async function playChannel(ch, showToast, options = {}) {
   };
   if ($("autoplayToggle")?.checked !== false) {
     $("playState").textContent = preview ? "Preview" : "Loading";
-    player.play().then(() => {
+    safePlayVideo(player, preview ? "channel-preview" : "channel", { id: ch.id, name: ch.name }, preview ? 2 : 3).then(() => {
       if (requestId !== playbackRequestId) return;
       $("playState").textContent = preview ? "Preview" : "Playing";
       showPlayerControls(false);
@@ -1540,7 +1540,7 @@ async function playMedia(item, showToast = true) {
     showVideoError(`${title} is not available right now.`);
   };
   $("playState").textContent = "Loading";
-  player.play().then(() => {
+  safePlayVideo(player, "media", { id: item.id, title, type: item.type }, 3).then(() => {
     $("playState").textContent = "Playing";
     showPlayerControls(false);
   }).catch(() => {
@@ -1583,6 +1583,11 @@ function loadVideoSource(player, source) {
     showVideoError("No stream URL for this channel.");
     return Promise.resolve();
   }
+  if (isHlsUrl(url) && shouldUseNativeHlsOnThisDevice()) {
+    player.src = url;
+    player.load();
+    return waitForVideoReady(player, 2600);
+  }
   if (isHlsUrl(url) && window.Hls?.isSupported()) {
     return new Promise((resolve) => {
       let settled = false;
@@ -1608,12 +1613,54 @@ function loadVideoSource(player, source) {
   } else {
     player.src = url;
     player.load();
-    return new Promise((resolve) => {
-      if (player.readyState >= 1) resolve();
-      else player.addEventListener("loadedmetadata", resolve, { once: true });
-      setTimeout(resolve, 1000);
-    });
+    return waitForVideoReady(player, 1600);
   }
+}
+
+function shouldUseNativeHlsOnThisDevice() {
+  return isTvApp();
+}
+
+function waitForVideoReady(player, timeout = 1800) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      player.removeEventListener("loadedmetadata", finish);
+      player.removeEventListener("loadeddata", finish);
+      player.removeEventListener("canplay", finish);
+      resolve();
+    };
+    if (player.readyState >= 2) return finish();
+    player.addEventListener("loadedmetadata", finish, { once: true });
+    player.addEventListener("loadeddata", finish, { once: true });
+    player.addEventListener("canplay", finish, { once: true });
+    setTimeout(finish, timeout);
+  });
+}
+
+function safePlayVideo(player, label, detail = {}, attempts = 2) {
+  let remaining = Math.max(1, attempts);
+  const tryPlay = () => {
+    return player.play().catch((error) => {
+      remaining -= 1;
+      logTvDebug("video-play-attempt-failed", {
+        label,
+        remaining,
+        message: error?.message,
+        readyState: player.readyState,
+        networkState: player.networkState,
+        currentSrc: player.currentSrc || player.src,
+        ...detail
+      });
+      if (remaining <= 0) throw error;
+      return waitForVideoReady(player, 1200).then(() => new Promise((resolve) => {
+        setTimeout(resolve, isTvApp() ? 350 : 150);
+      })).then(tryPlay);
+    });
+  };
+  return tryPlay();
 }
 
 function sameVideoSource(player, source) {
@@ -1848,11 +1895,22 @@ function renderSeries() {
     logTvDebug("series-card-click", { id: item.id, title: item.title, seriesId: item.seriesId });
     state.selectedSeriesId = item.id;
     renderSeriesDetail();
+    focusSeriesDetail();
     loadSeriesEpisodes(item).catch((error) => {
       logTvDebug("series-episodes-error", { id: item.id, title: item.title, message: error.message });
+    }).finally(() => {
+      if (state.selectedSeriesId === item.id) focusSeriesDetail();
     });
   }, gridLimit);
   renderSeriesDetail();
+}
+
+function focusSeriesDetail() {
+  const detail = $("seriesDetail");
+  if (!detail) return;
+  detail.scrollIntoView({ block: "nearest", inline: "nearest" });
+  const firstEpisode = detail.querySelector(".episode-row");
+  if (isTvApp() && firstEpisode) firstEpisode.focus({ preventScroll: true });
 }
 
 function renderSeriesDetail() {
