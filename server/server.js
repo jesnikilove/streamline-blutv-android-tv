@@ -14,6 +14,7 @@ const seriesLimit = readLimit(process.env.SERIES_LIMIT);
 let providerSession = invalidSession();
 const liveHlsSessions = new Map();
 const movieHlsSessions = new Map();
+const clientLogs = [];
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -52,6 +53,14 @@ http.createServer(async (req, res) => {
       const result = await loadChannelEpg(body.streamId, body.streamUrl);
       return sendJson(res, 200, { ok: true, data: result });
     }
+    if (req.method === "POST" && req.url === "/api/client-log") {
+      const body = await readJson(req);
+      addClientLog(body);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/client-logs")) {
+      return sendJson(res, 200, { ok: true, logs: clientLogs.slice(-120) });
+    }
     if (req.method === "GET" && req.url.startsWith("/api/stream/live/")) {
       return proxyLiveStream(req, res);
     }
@@ -82,6 +91,15 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+}
+
+function addClientLog(entry) {
+  clientLogs.push({
+    time: new Date().toISOString(),
+    ...entry
+  });
+  if (clientLogs.length > 300) clientLogs.splice(0, clientLogs.length - 300);
+  console.log("[client]", JSON.stringify(clientLogs[clientLogs.length - 1]));
 }
 
 function serveFile(req, res) {

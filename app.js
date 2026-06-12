@@ -149,6 +149,7 @@ const $ = (id) => document.getElementById(id);
 
 function init() {
   document.body.classList.toggle("tv-app", isTvApp());
+  installTvDebugLogging();
   installBackHandler();
   const hasSyncCache = loadCachedProviderLibrary();
   bindLogin();
@@ -166,6 +167,44 @@ function init() {
     $("loginButton").focus();
   }
   if (!hasSyncCache) hydrateLargeProviderCache();
+}
+
+function installTvDebugLogging() {
+  if (!isTvApp()) return;
+  window.addEventListener("error", (event) => {
+    logTvDebug("window-error", { message: event.message, source: event.filename, line: event.lineno, column: event.colno });
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    logTvDebug("promise-error", { message: event.reason?.message || String(event.reason || "") });
+  });
+}
+
+function logTvDebug(event, details = {}) {
+  if (!isTvApp()) return;
+  const player = $("videoPlayer");
+  const payload = {
+    event,
+    url: location.href,
+    view: state.view,
+    currentMedia: state.currentMedia,
+    playState: $("playState")?.textContent,
+    video: player ? {
+      src: player.currentSrc || player.src || "",
+      readyState: player.readyState,
+      networkState: player.networkState,
+      paused: player.paused,
+      currentTime: player.currentTime,
+      videoWidth: player.videoWidth,
+      videoHeight: player.videoHeight,
+      error: player.error ? { code: player.error.code, message: player.error.message } : null
+    } : null,
+    details
+  };
+  fetch("/api/client-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }).catch(() => {});
 }
 
 function installBackHandler() {
@@ -1444,6 +1483,7 @@ async function playChannel(ch, showToast, options = {}) {
   }
   if (requestId !== playbackRequestId) return;
   state.currentMedia = { id: ch.id, title: ch.name, type: "Channel" };
+  logTvDebug("play-channel-start", { id: ch.id, streamId: ch.streamId, name: ch.name, source: playableChannelSource(ch), preview });
   const player = $("videoPlayer");
   enableHardwareVolume();
   player.poster = "";
@@ -1461,6 +1501,7 @@ async function playChannel(ch, showToast, options = {}) {
   }, { once: true });
   await loadVideoSource(player, playableChannelSource(ch));
   player.onerror = () => {
+    logTvDebug("channel-video-error", { id: ch.id, name: ch.name });
     if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} is not available right now.`);
   };
   if ($("autoplayToggle")?.checked !== false) {
@@ -1470,6 +1511,7 @@ async function playChannel(ch, showToast, options = {}) {
       $("playState").textContent = preview ? "Preview" : "Playing";
       showPlayerControls(false);
     }).catch(() => {
+      logTvDebug("channel-play-rejected", { id: ch.id, name: ch.name });
       if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} could not start.`);
     });
   }
@@ -1478,6 +1520,8 @@ async function playChannel(ch, showToast, options = {}) {
 async function playMedia(item, showToast = true) {
   const title = item.title || item.name || "Selected title";
   state.currentMedia = { ...item, title };
+  const mediaSource = playableMediaSource(item);
+  logTvDebug("play-media-start", { id: item.id, title, type: item.type, container: item.container, source: mediaSource });
   $("nowCategory").textContent = item.category || item.type || "Now Playing";
   $("nowTitle").textContent = title;
   $("nowDesc").textContent = item.description || item.program || `${item.type || "Video"} playback`;
@@ -1487,9 +1531,10 @@ async function playMedia(item, showToast = true) {
   enableHardwareVolume();
   player.poster = item.image || "";
   clearVideoError();
-  await loadVideoSource(player, playableMediaSource(item));
+  await loadVideoSource(player, mediaSource);
   enableHardwareVolume();
   player.onerror = () => {
+    logTvDebug("media-video-error", { id: item.id, title, type: item.type });
     showVideoError(`${title} is not available right now.`);
   };
   $("playState").textContent = "Loading";
@@ -1497,6 +1542,7 @@ async function playMedia(item, showToast = true) {
     $("playState").textContent = "Playing";
     showPlayerControls(false);
   }).catch(() => {
+    logTvDebug("media-play-rejected", { id: item.id, title, type: item.type });
     showVideoError(`Press play to start ${title}.`);
   });
   setView("live");
@@ -1524,6 +1570,7 @@ function isProviderLocalUrl(url) {
 function loadVideoSource(player, source) {
   const url = source || "";
   if (url && sameVideoSource(player, url) && player.readyState >= 1) return Promise.resolve();
+  logTvDebug("load-video-source", { source: url });
   if (hlsPlayer) {
     hlsPlayer.destroy();
     hlsPlayer = null;
@@ -1579,6 +1626,7 @@ function sameVideoSource(player, source) {
 
 function showVideoError(message) {
   const player = $("videoPlayer");
+  logTvDebug("show-video-error", { message });
   $("playState").textContent = "Unavailable";
   if (player.readyState === 0) {
     player.removeAttribute("src");
@@ -1795,9 +1843,12 @@ function renderMovieDetail() {
 
 function renderSeries() {
   renderPosterGrid($("seriesGrid"), data.series, (item) => {
+    logTvDebug("series-card-click", { id: item.id, title: item.title, seriesId: item.seriesId });
     state.selectedSeriesId = item.id;
     renderSeriesDetail();
-    loadSeriesEpisodes(item).catch(() => {});
+    loadSeriesEpisodes(item).catch((error) => {
+      logTvDebug("series-episodes-error", { id: item.id, title: item.title, message: error.message });
+    });
   }, gridLimit);
   renderSeriesDetail();
 }
