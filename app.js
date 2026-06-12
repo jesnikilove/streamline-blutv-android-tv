@@ -15,8 +15,12 @@ let searchRenderFrame = null;
 let providerSessionReady = false;
 let channelPreviewTimer = null;
 let playbackRequestId = 0;
+let playMediaLockUntil = 0;
+let playMediaLastKey = "";
+let suppressEnterUntil = 0;
 let backExitArmed = false;
 let backExitTimer = null;
+let nativePlayerActive = false;
 
 const libraryIndex = {
   channelCategoryMap: new Map(),
@@ -75,6 +79,9 @@ const state = {
   movieSortAsc: true,
   usingProviderData: false,
   currentMedia: null,
+  seriesScreen: "grid",
+  returnView: null,
+  returnSeriesScreen: null,
   captionsOn: false,
   wideMode: false,
   controlsTimer: null,
@@ -151,6 +158,7 @@ function init() {
   document.body.classList.toggle("tv-app", isTvApp());
   installTvDebugLogging();
   installBackHandler();
+  installNativePlayerBridge();
   const hasSyncCache = loadCachedProviderLibrary();
   bindLogin();
   renderPlaylistProfiles();
@@ -280,6 +288,55 @@ async function hydrateLargeProviderCache() {
 function isTvApp() {
   return new URLSearchParams(window.location.search).get("tvApp") === "1"
     || navigator.userAgent.includes("StreamlineBluTVApp");
+}
+
+function hasNativePlayer() {
+  try {
+    return isTvApp() && window.StreamlineNativePlayer?.isAvailable?.() === true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function absoluteStreamUrl(url) {
+  if (!url) return "";
+  try {
+    return new URL(url, window.location.href).href;
+  } catch (_error) {
+    return url;
+  }
+}
+
+function startNativePlayer(url) {
+  if (!hasNativePlayer() || !url) return false;
+  nativePlayerActive = true;
+  window.StreamlineNativePlayer.play(absoluteStreamUrl(url));
+  return true;
+}
+
+function stopNativePlayer() {
+  nativePlayerActive = false;
+  try {
+    window.StreamlineNativePlayer?.stop?.();
+  } catch (_error) {}
+}
+
+function installNativePlayerBridge() {
+  if (!isTvApp()) return;
+  window.streamlineNativeOnReady = () => {
+    nativePlayerActive = true;
+    $("playState").textContent = "Playing";
+    showPlayerControls(false);
+    logTvDebug("native-player-ready", {});
+  };
+  window.streamlineNativeOnError = (message) => {
+    nativePlayerActive = false;
+    logTvDebug("native-player-error", { message: message || "" });
+    showVideoError(message || "Playback failed.");
+  };
+  window.streamlineNativeOnStopped = () => {
+    nativePlayerActive = false;
+  };
 }
 
 async function restoreSavedProviderSession() {
@@ -758,19 +815,44 @@ function bindNavigation() {
       handleAppBack();
       return;
     }
-    if (event.key === "Enter" && document.activeElement?.classList.contains("poster-card")) {
-      document.activeElement.click();
+    if (event.key === "Enter") {
+      if (Date.now() < suppressEnterUntil) {
+        event.preventDefault();
+        return;
+      }
+      if (document.activeElement?.classList.contains("poster-card")) {
+        suppressEnterUntil = Date.now() + 500;
+        event.preventDefault();
+        document.activeElement.click();
+      }
     }
   });
 }
 
 function handleAppBack() {
   if (!$("homeScreen") || $("homeScreen").classList.contains("hidden")) return false;
-  if (document.body.classList.contains("tv-player-open")) {
+  const playerOpen = document.body.classList.contains("tv-player-open");
+  const hasReturnView = state.returnView && state.returnView !== "live";
+  if (playerOpen || hasReturnView) {
+    if (playerOpen || isVodPlaybackActive()) stopVideoPlayback();
     exitPlayerFullscreen();
+    restoreViewAfterPlayer();
+    return false;
+  }
+  if (state.view === "series") {
+    if (state.seriesScreen === "detail") {
+      state.seriesScreen = "grid";
+      focusSeriesGrid();
+      return false;
+    }
+    state.returnView = null;
+    state.returnSeriesScreen = null;
+    setView("live");
+    document.querySelector('[data-view="live"]')?.focus();
     return false;
   }
   if (state.view !== "live") {
+    clearPreviewPlayer();
     setView("live");
     document.querySelector('[data-view="live"]')?.focus();
     return false;
@@ -811,11 +893,16 @@ function handlePlayerKeys(event) {
 function handleTvFocusKeys(event) {
   if (!isTvApp() || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return false;
   if (handleLiveDirectionalFocus(event)) return true;
+  if (handleSeriesDirectionalFocus(event)) return true;
+  if (handleMoviesDirectionalFocus(event)) return true;
+  if (handleNavDirectionalFocus(event)) return true;
   const focusables = visibleFocusables();
   if (!focusables.length) return false;
   const current = document.activeElement;
   if (!focusables.includes(current)) {
-    focusables[0].focus();
+    event.preventDefault();
+    if (state.view === "movies") focusMovieCategoryTab();
+    else focusables[0].focus();
     return true;
   }
   const currentRect = current.getBoundingClientRect();
@@ -830,7 +917,13 @@ function handleTvFocusKeys(event) {
     if (event.key === "ArrowDown") return center.y > currentCenter.y + 6;
     return center.y < currentCenter.y - 6;
   });
-  if (!candidates.length) return false;
+  if (!candidates.length) {
+    if (state.view === "series" || state.view === "movies") {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  }
   const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
   candidates.sort((a, b) => {
     const primaryA = horizontal ? Math.abs(a.center.x - currentCenter.x) : Math.abs(a.center.y - currentCenter.y);
@@ -844,6 +937,265 @@ function handleTvFocusKeys(event) {
   candidates[0].item.scrollIntoView({ block: "nearest", inline: "nearest" });
   handleFocusedLiveItem(candidates[0].item);
   return true;
+}
+
+function handleSeriesDirectionalFocus(event) {
+  if (state.view !== "series") return false;
+  const current = document.activeElement;
+  const grid = $("seriesGrid");
+  const detail = $("seriesDetail");
+  const inGrid = grid?.contains(current);
+  const inDetail = detail?.contains(current);
+
+  if (state.seriesScreen === "grid") {
+    if (inDetail) {
+      event.preventDefault();
+      focusSeriesGrid();
+      return true;
+    }
+    if (inGrid) {
+      const moved = moveDirectionalFocusIn(grid, current, event);
+      if (moved) {
+        const nextId = document.activeElement?.dataset?.itemId;
+        if (nextId) state.selectedSeriesId = nextId;
+      }
+      return moved;
+    }
+    return false;
+  }
+
+  if (!inGrid && !inDetail) return false;
+
+  if (inDetail) {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      state.seriesScreen = "grid";
+      focusSeriesGrid();
+      return true;
+    }
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      const items = [...detail.querySelectorAll("h3[tabindex], .episode-row")];
+      const idx = items.indexOf(current);
+      const dir = event.key === "ArrowDown" ? 1 : -1;
+      const next = idx === -1 ? items[0] : items[idx + dir];
+      if (next) {
+        next.focus();
+        next.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+      return true;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      return true;
+    }
+  }
+
+  if (inGrid) {
+    return moveDirectionalFocusIn(grid, current, event);
+  }
+  return false;
+}
+
+function handleMoviesDirectionalFocus(event) {
+  if (state.view !== "movies") return false;
+  const current = document.activeElement;
+  const detail = $("movieDetail");
+  const grid = $("movieGrid");
+  const toolbar = document.querySelector("#viewMovies .content-toolbar");
+  const detailVisible = detail && !detail.classList.contains("hidden");
+  const inDetail = detailVisible && detail.contains(current);
+  const inGrid = grid?.contains(current);
+  const inToolbar = toolbar?.contains(current);
+  if (!inDetail && !inGrid && !inToolbar) return false;
+
+  const playBtn = $("moviePlayButton");
+  const favBtn = $("movieFavoriteButton");
+  const activeTab = () => $("movieTabs")?.querySelector(".chip.active") || $("movieTabs")?.querySelector(".chip");
+  const movieChips = () => [...($("movieTabs")?.querySelectorAll(".chip") || [])];
+  const focusFirstGridCard = () => {
+    const card = grid?.querySelector(".poster-card");
+    card?.focus();
+    card?.scrollIntoView({ block: "nearest", inline: "start" });
+  };
+  const hasGridMove = (direction) => {
+    if (!grid || !current) return false;
+    const focusables = focusablesIn(grid);
+    if (!focusables.includes(current)) return false;
+    const currentCenter = rectCenter(current.getBoundingClientRect());
+    return focusables.some((item) => {
+      if (item === current) return false;
+      const center = rectCenter(item.getBoundingClientRect());
+      if (direction === "up") return center.y < currentCenter.y - 6;
+      if (direction === "down") return center.y > currentCenter.y + 6;
+      if (direction === "left") return center.x < currentCenter.x - 6;
+      return center.x > currentCenter.x + 6;
+    });
+  };
+
+  if (inDetail) {
+    const actions = [playBtn, favBtn].filter(Boolean);
+    if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && actions.includes(current)) {
+      event.preventDefault();
+      const idx = actions.indexOf(current);
+      const dir = event.key === "ArrowRight" ? 1 : -1;
+      actions[(idx + dir + actions.length) % actions.length]?.focus();
+      return true;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (current === favBtn && playBtn) playBtn.focus();
+      return true;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      activeTab()?.focus();
+      return true;
+    }
+  }
+
+  if (inToolbar) {
+    const chips = movieChips();
+    if (chips.includes(current) && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      event.preventDefault();
+      const idx = chips.indexOf(current);
+      const dir = event.key === "ArrowRight" ? 1 : -1;
+      const next = chips[idx + dir];
+      if (next) {
+        next.focus();
+        next.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+      return true;
+    }
+    if (event.key === "ArrowLeft" && current?.id === "sortMovies") {
+      event.preventDefault();
+      chips[chips.length - 1]?.focus();
+      return true;
+    }
+    if (event.key === "ArrowRight" && chips.includes(current) && current === chips[chips.length - 1]) {
+      event.preventDefault();
+      $("sortMovies")?.focus();
+      return true;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (detailVisible && playBtn) playBtn.focus();
+      return true;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusFirstGridCard();
+      return true;
+    }
+  }
+
+  if (inGrid) {
+    if (event.key === "ArrowUp") {
+      if (hasGridMove("up")) return moveDirectionalFocusIn(grid, current, event);
+      event.preventDefault();
+      activeTab()?.focus();
+      return true;
+    }
+    return moveDirectionalFocusIn(grid, current, event);
+  }
+
+  return false;
+}
+
+function handleNavDirectionalFocus(event) {
+  const current = document.activeElement;
+  if (!current?.classList.contains("nav-item")) return false;
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    focusViewEntry(state.view);
+    return true;
+  }
+  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    event.preventDefault();
+    const navItems = [...document.querySelectorAll(".nav-item")];
+    const idx = navItems.indexOf(current);
+    const dir = event.key === "ArrowDown" ? 1 : -1;
+    navItems[(idx + dir + navItems.length) % navItems.length]?.focus();
+    return true;
+  }
+  return false;
+}
+
+function focusViewEntry(view) {
+  if (view === "series") {
+    state.seriesScreen = "grid";
+    focusSeriesGrid();
+    return;
+  }
+  if (view === "live") {
+    focusActiveLiveRow("liveCategories", "category", state.category);
+    return;
+  }
+  if (view === "movies") {
+    if ($("movieDetail") && !$("movieDetail").classList.contains("hidden") && $("moviePlayButton")) {
+      $("moviePlayButton").focus();
+      return;
+    }
+    $("movieTabs")?.querySelector(".chip.active")?.focus()
+      || $("movieTabs")?.querySelector(".chip")?.focus()
+      || $("movieGrid")?.querySelector(".poster-card")?.focus();
+    return;
+  }
+  if (view === "guide") {
+    $("guideRows")?.querySelector(".guide-channel")?.focus();
+    return;
+  }
+  if (view === "favorites") {
+    $("favoritesGrid")?.querySelector(".poster-card")?.focus();
+    return;
+  }
+  if (view === "search") {
+    $("searchInput")?.focus();
+    return;
+  }
+  if (view === "settings") {
+    $("changeLogin")?.focus();
+  }
+}
+
+function moveDirectionalFocusIn(container, current, event) {
+  const focusables = focusablesIn(container);
+  if (!focusables.includes(current)) return false;
+  const currentRect = current.getBoundingClientRect();
+  const currentCenter = rectCenter(currentRect);
+  const candidates = focusables.filter((item) => item !== current).map((item) => {
+    const rect = item.getBoundingClientRect();
+    return { item, center: rectCenter(rect) };
+  }).filter(({ center }) => {
+    if (event.key === "ArrowRight") return center.x > currentCenter.x + 6;
+    if (event.key === "ArrowLeft") return center.x < currentCenter.x - 6;
+    if (event.key === "ArrowDown") return center.y > currentCenter.y + 6;
+    return center.y < currentCenter.y - 6;
+  });
+  if (!candidates.length) {
+    event.preventDefault();
+    return true;
+  }
+  const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
+  candidates.sort((a, b) => {
+    const primaryA = horizontal ? Math.abs(a.center.x - currentCenter.x) : Math.abs(a.center.y - currentCenter.y);
+    const primaryB = horizontal ? Math.abs(b.center.x - currentCenter.x) : Math.abs(b.center.y - currentCenter.y);
+    const secondaryA = horizontal ? Math.abs(a.center.y - currentCenter.y) : Math.abs(a.center.x - currentCenter.x);
+    const secondaryB = horizontal ? Math.abs(b.center.y - currentCenter.y) : Math.abs(b.center.x - currentCenter.x);
+    return (primaryA + secondaryA * 1.8) - (primaryB + secondaryB * 1.8);
+  });
+  event.preventDefault();
+  candidates[0].item.focus();
+  candidates[0].item.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
+}
+
+function focusablesIn(container) {
+  return [...container.querySelectorAll(".focusable:not([disabled])")].filter((item) => {
+    const rect = item.getBoundingClientRect();
+    const style = window.getComputedStyle(item);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+  });
 }
 
 function handleLiveDirectionalFocus(event) {
@@ -927,11 +1279,31 @@ function handleFocusedLiveItem(item) {
 }
 
 function visibleFocusables() {
-  return [...document.querySelectorAll(".focusable:not([disabled])")].filter((item) => {
-    const rect = item.getBoundingClientRect();
-    const style = window.getComputedStyle(item);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-  });
+  const scopes = [document.querySelector(".rail")].filter(Boolean);
+  if (state.view !== "movies") {
+    const topbar = document.querySelector(".topbar");
+    if (topbar) scopes.push(topbar);
+  }
+  const activeView = document.querySelector(".view.active");
+  if (activeView) {
+    if (state.view === "series" && state.seriesScreen === "grid") {
+      const gridWrap = $("seriesGrid")?.parentElement;
+      if (gridWrap) scopes.push(gridWrap);
+    } else if (state.view === "series" && state.seriesScreen === "detail") {
+      const detail = $("seriesDetail");
+      if (detail) scopes.push(detail);
+    } else if (state.view === "movies") {
+      const detail = $("movieDetail");
+      if (detail && !detail.classList.contains("hidden")) scopes.push(detail);
+      const toolbar = document.querySelector("#viewMovies .content-toolbar");
+      if (toolbar) scopes.push(toolbar);
+      const grid = $("movieGrid");
+      if (grid) scopes.push(grid);
+    } else {
+      scopes.push(activeView);
+    }
+  }
+  return scopes.flatMap((scope) => focusablesIn(scope));
 }
 
 function rectCenter(rect) {
@@ -942,8 +1314,10 @@ function isTypingField(element) {
   return ["INPUT", "TEXTAREA", "SELECT"].includes(element?.tagName) || element?.isContentEditable;
 }
 
-function setView(view) {
-  document.body.classList.remove("tv-player-open");
+function setView(view, options = {}) {
+  if (!options.keepPlayerOpen) document.body.classList.remove("tv-player-open");
+  if (state.view === "live" && view !== "live" && !options.keepPlayerOpen) stopVideoPlayback();
+  if (view === "series" && !options.preserveSeriesScreen) state.seriesScreen = "grid";
   state.view = view;
   $("homeScreen").dataset.activeView = view;
   document.querySelectorAll(".nav-item").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
@@ -959,6 +1333,9 @@ function setView(view) {
   if (view === "search") {
     renderSearch();
     setTimeout(() => $("searchInput").focus(), 0);
+  }
+  if (view === "series" && isTvApp()) {
+    setTimeout(() => focusSeriesGrid(), 0);
   }
 }
 
@@ -1035,7 +1412,9 @@ function bindActions() {
 
 async function toggleFullscreen() {
   if (isTvApp() && document.body.classList.contains("tv-player-open")) {
+    if (isVodPlaybackActive()) stopVideoPlayback();
     await exitPlayerFullscreen();
+    restoreViewAfterPlayer();
     return;
   }
   if (state.view !== "live") setView("live");
@@ -1109,7 +1488,11 @@ function showPlayerControls(show) {
   $("playerControls").classList.toggle("hidden", !show);
   $("videoFrame").classList.toggle("controls-open", show);
   $("controlMediaTitle").textContent = state.currentMedia?.title || $("nowTitle").textContent || "Paused";
-  $("playerPlayPause").textContent = $("videoPlayer").paused ? "Play" : "Pause";
+  if (hasNativePlayer() && nativePlayerActive) {
+    $("playerPlayPause").textContent = window.StreamlineNativePlayer.isPlaying() ? "Pause" : "Play";
+  } else {
+    $("playerPlayPause").textContent = $("videoPlayer").paused ? "Play" : "Pause";
+  }
   updatePlayerOptionStates();
   if (show) {
     updateSeekBar();
@@ -1133,6 +1516,12 @@ function updatePlayerOptionStates() {
 }
 
 function togglePlayerPlayback() {
+  if (hasNativePlayer() && nativePlayerActive) {
+    if (window.StreamlineNativePlayer.isPlaying()) window.StreamlineNativePlayer.pause();
+    else window.StreamlineNativePlayer.resume();
+    showPlayerControls(true);
+    return;
+  }
   const player = $("videoPlayer");
   if (player.paused) {
     player.play().then(() => showPlayerControls(true)).catch(() => toast("Playback is blocked by this browser."));
@@ -1333,6 +1722,9 @@ function previewChannel(ch, options = {}) {
 function scheduleChannelPreview(ch) {
   clearTimeout(channelPreviewTimer);
   channelPreviewTimer = setTimeout(async () => {
+    if (isVodPlaybackActive()) return;
+    if (document.body.classList.contains("tv-player-open")) return;
+    if (state.view === "movies" || state.view === "series") return;
     if (state.view === "live" && state.selectedChannelId === ch.id) {
       loadChannelGuide(ch);
       try {
@@ -1470,6 +1862,7 @@ function playSelectedChannel(showToast) {
 async function playChannel(ch, showToast, options = {}) {
   if (!ch) return;
   const preview = !!options.preview;
+  if (preview && (isVodPlaybackActive() || document.body.classList.contains("tv-player-open") || state.view === "movies" || state.view === "series")) return;
   const requestId = ++playbackRequestId;
   try {
     const ready = await ensureProviderSessionReady();
@@ -1483,7 +1876,16 @@ async function playChannel(ch, showToast, options = {}) {
   }
   if (requestId !== playbackRequestId) return;
   state.currentMedia = { id: ch.id, title: ch.name, type: "Channel" };
-  logTvDebug("play-channel-start", { id: ch.id, streamId: ch.streamId, name: ch.name, source: playableChannelSource(ch), preview });
+  const source = playableChannelSource(ch);
+  logTvDebug("play-channel-start", { id: ch.id, streamId: ch.streamId, name: ch.name, source, preview, native: hasNativePlayer() });
+  if (hasNativePlayer() && source && !preview) {
+    stopNativePlayer();
+    enableHardwareVolume();
+    clearVideoError();
+    $("playState").textContent = "Loading";
+    startNativePlayer(source);
+    return;
+  }
   const player = $("videoPlayer");
   enableHardwareVolume();
   player.poster = "";
@@ -1499,7 +1901,7 @@ async function playChannel(ch, showToast, options = {}) {
     clearVideoError();
     $("playState").textContent = preview ? "Preview" : "Playing";
   }, { once: true });
-  await loadVideoSource(player, playableChannelSource(ch));
+  await loadVideoSource(player, source);
   player.onerror = () => {
     if (requestId !== playbackRequestId) return;
     logTvDebug("channel-video-error", { id: ch.id, name: ch.name });
@@ -1521,52 +1923,154 @@ async function playChannel(ch, showToast, options = {}) {
 
 async function playMedia(item, showToast = true) {
   const title = item.title || item.name || "Selected title";
+  const mediaKey = item.id || item.streamUrl || title;
+  const now = Date.now();
+  if (now < playMediaLockUntil && mediaKey === playMediaLastKey) return;
+  playMediaLockUntil = now + 1500;
+  playMediaLastKey = mediaKey;
+
+  clearTimeout(channelPreviewTimer);
+  const requestId = ++playbackRequestId;
   state.currentMedia = { ...item, title };
-  const mediaSource = playableMediaSource(item);
-  logTvDebug("play-media-start", { id: item.id, title, type: item.type, container: item.container, source: mediaSource });
+  const directUrl = item.streamUrl || videoUrl;
+  logTvDebug("play-media-start", { id: item.id, title, type: item.type, container: item.container, source: directUrl, native: hasNativePlayer() });
   $("nowCategory").textContent = item.category || item.type || "Now Playing";
   $("nowTitle").textContent = title;
   $("nowDesc").textContent = item.description || item.program || `${item.type || "Video"} playback`;
   $("favoriteButton").textContent = isFavorite(item.id) ? "Unfavorite" : "Favorite";
 
+  if (hasNativePlayer() && directUrl) {
+    stopNativePlayer();
+    clearVideoError();
+    $("playState").textContent = "Loading";
+    startNativePlayer(directUrl);
+    if (isTvApp()) {
+      if (state.view !== "live") {
+        state.returnView = state.view;
+        if (state.view === "series") state.returnSeriesScreen = state.seriesScreen;
+      }
+      setView("live", { keepPlayerOpen: true });
+      $("sectionKicker").textContent = item.type || "Video";
+      $("sectionTitle").textContent = title;
+      $("miniGuide").innerHTML = "";
+      openPlayerFullscreen(false);
+    } else {
+      setView("live");
+      $("sectionKicker").textContent = item.type || "Video";
+      $("sectionTitle").textContent = title;
+      $("miniGuide").innerHTML = "";
+      setTimeout(() => {
+        if (requestId !== playbackRequestId) return;
+        openPlayerFullscreen(false);
+      }, 80);
+    }
+    if (showToast) toast(`Opening ${title}`);
+    return;
+  }
+
+  const mediaSource = playableMediaSource(item);
+  logTvDebug("play-media-web", { id: item.id, title, type: item.type, source: mediaSource });
   const player = $("videoPlayer");
   enableHardwareVolume();
   player.poster = item.image || "";
   clearVideoError();
   await loadVideoSource(player, mediaSource);
+  if (requestId !== playbackRequestId) return;
+  if (isTvApp() && mediaSource.includes("transcode-movie")) {
+    await waitForVideoReady(player, 8000);
+  }
+  if (requestId !== playbackRequestId) return;
   enableHardwareVolume();
   player.onerror = () => {
+    if (requestId !== playbackRequestId) return;
     logTvDebug("media-video-error", { id: item.id, title, type: item.type });
     showVideoError(`${title} is not available right now.`);
   };
   $("playState").textContent = "Loading";
-  safePlayVideo(player, "media", { id: item.id, title, type: item.type }, 3).then(() => {
+  const playAttempts = mediaSource.includes("transcode-movie") ? 1 : (isTvApp() ? 2 : 3);
+  safePlayVideo(player, "media", { id: item.id, title, type: item.type }, playAttempts).then(() => {
+    if (requestId !== playbackRequestId) return;
     $("playState").textContent = "Playing";
     showPlayerControls(false);
   }).catch(() => {
+    if (requestId !== playbackRequestId) return;
     logTvDebug("media-play-rejected", { id: item.id, title, type: item.type });
     showVideoError(`Press play to start ${title}.`);
   });
-  setView("live");
-  $("sectionKicker").textContent = item.type || "Video";
-  $("sectionTitle").textContent = title;
-  $("miniGuide").innerHTML = "";
+  if (isTvApp()) {
+    if (state.view !== "live") {
+      state.returnView = state.view;
+      if (state.view === "series") state.returnSeriesScreen = state.seriesScreen;
+    }
+    setView("live", { keepPlayerOpen: true });
+    $("sectionKicker").textContent = item.type || "Video";
+    $("sectionTitle").textContent = title;
+    $("miniGuide").innerHTML = "";
+    openPlayerFullscreen(false);
+  } else {
+    setView("live");
+    $("sectionKicker").textContent = item.type || "Video";
+    $("sectionTitle").textContent = title;
+    $("miniGuide").innerHTML = "";
+    setTimeout(() => {
+      if (requestId !== playbackRequestId) return;
+      openPlayerFullscreen(false);
+    }, 80);
+  }
   if (showToast) toast(`Opening ${title}`);
-  setTimeout(() => openPlayerFullscreen(false), 80);
+}
+
+function isVodMedia(media) {
+  const type = media?.type;
+  return type === "Movie" || type === "Episode";
+}
+
+function isVodPlaybackActive() {
+  return isVodMedia(state.currentMedia);
+}
+
+function stopVideoPlayback() {
+  playbackRequestId += 1;
+  clearTimeout(channelPreviewTimer);
+  if (hasNativePlayer()) stopNativePlayer();
+  if (hlsPlayer) {
+    hlsPlayer.destroy();
+    hlsPlayer = null;
+  }
+  const player = $("videoPlayer");
+  player.onerror = null;
+  player.pause();
+  player.poster = "";
+  player.removeAttribute("src");
+  player.load();
+  $("playState").textContent = "Ready";
+  $("videoOverlay").classList.remove("visible");
+  showPlayerControls(false);
+  const ch = selectedChannel();
+  state.currentMedia = ch ? { id: ch.id, title: ch.name, type: "Channel" } : null;
+}
+
+function clearPreviewPlayer() {
+  if (isVodPlaybackActive() || document.body.classList.contains("tv-player-open")) {
+    stopVideoPlayback();
+    return;
+  }
+  const player = $("videoPlayer");
+  if (player.poster) player.poster = "";
 }
 
 function playableMediaSource(item) {
   const url = item.streamUrl || videoUrl;
-  if (!isProviderLocalUrl(url)) return url;
-  return `/api/movie-hls/${encodeURIComponent(item.id || item.title || "movie")}/playlist.m3u8?url=${encodeURIComponent(url)}`;
+  if (hasNativePlayer()) return absoluteStreamUrl(url);
+  const source = `${item.container || ""} ${url}`.toLowerCase();
+  if (source.includes(".mkv") || source.includes("mkv")) {
+    return `/api/transcode-movie?url=${encodeURIComponent(url)}`;
+  }
+  return url;
 }
 
 function playableChannelSource(ch) {
   return ch?.streamUrl || "";
-}
-
-function isProviderLocalUrl(url) {
-  return /^https?:\/\//i.test(String(url || ""));
 }
 
 function loadVideoSource(player, source) {
@@ -1820,7 +2324,13 @@ async function openChannelFromGuide(ch) {
   await playChannel(ch, false);
 }
 
-function renderMovies() {
+function focusMovieCategoryTab() {
+  const tab = $("movieTabs")?.querySelector(".chip.active") || $("movieTabs")?.querySelector(".chip");
+  tab?.focus();
+  tab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function renderMovies(options = {}) {
   const tabs = $("movieTabs");
   tabs.innerHTML = "";
   data.movieTabs.forEach((tab) => {
@@ -1831,7 +2341,7 @@ function renderMovies() {
     btn.addEventListener("click", () => {
       state.movieCategory = tab;
       $("sectionTitle").textContent = tab;
-      renderMovies();
+      renderMovies({ focusTab: true });
     });
     tabs.appendChild(btn);
   });
@@ -1844,6 +2354,9 @@ function renderMovies() {
   });
   renderPosterGrid($("movieGrid"), movies, openMovieDetail, gridLimit);
   renderMovieDetail();
+  if (isTvApp() && options.focusTab) {
+    setTimeout(() => focusMovieCategoryTab(), 0);
+  }
 }
 
 function openMovieDetail(movie) {
@@ -1893,24 +2406,58 @@ function renderMovieDetail() {
 function renderSeries() {
   renderPosterGrid($("seriesGrid"), data.series, (item) => {
     logTvDebug("series-card-click", { id: item.id, title: item.title, seriesId: item.seriesId });
+    suppressEnterUntil = Date.now() + 500;
+    stopVideoPlayback();
     state.selectedSeriesId = item.id;
+    state.seriesScreen = "detail";
     renderSeriesDetail();
-    focusSeriesDetail();
+    setTimeout(() => focusSeriesDetail(), 0);
     loadSeriesEpisodes(item).catch((error) => {
       logTvDebug("series-episodes-error", { id: item.id, title: item.title, message: error.message });
     }).finally(() => {
-      if (state.selectedSeriesId === item.id) focusSeriesDetail();
+      if (state.selectedSeriesId === item.id) setTimeout(() => focusSeriesDetail(), 0);
     });
   }, gridLimit);
   renderSeriesDetail();
 }
 
+function focusSeriesGrid() {
+  const grid = $("seriesGrid");
+  if (!grid) return;
+  const card = grid.querySelector(`[data-item-id="${cssEscape(state.selectedSeriesId)}"]`) || grid.querySelector(".poster-card");
+  card?.focus();
+  card?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
 function focusSeriesDetail() {
   const detail = $("seriesDetail");
   if (!detail) return;
+  state.seriesScreen = "detail";
   detail.scrollIntoView({ block: "nearest", inline: "nearest" });
-  const firstEpisode = detail.querySelector(".episode-row");
-  if (isTvApp() && firstEpisode) firstEpisode.focus({ preventScroll: true });
+  if (!isTvApp()) return;
+  const heading = detail.querySelector("h3");
+  if (!heading) return;
+  if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+  heading.focus({ preventScroll: true });
+}
+
+function restoreViewAfterPlayer() {
+  if (!state.returnView || state.returnView === "live") return false;
+  const returnView = state.returnView;
+  const returnSeriesScreen = state.returnSeriesScreen || "detail";
+  state.returnView = null;
+  state.returnSeriesScreen = null;
+  if (returnView === "series") {
+    state.seriesScreen = returnSeriesScreen;
+    setView("series", { preserveSeriesScreen: true });
+    setTimeout(() => {
+      if (state.seriesScreen === "detail") focusSeriesDetail();
+      else focusSeriesGrid();
+    }, 0);
+    return true;
+  }
+  setView(returnView);
+  return true;
 }
 
 function renderSeriesDetail() {
@@ -1934,7 +2481,11 @@ function renderSeriesDetail() {
       row.type = "button";
       row.className = "episode-row focusable";
       row.innerHTML = `<span>${ep.title}</span><span>Play</span>`;
-      row.addEventListener("click", async () => {
+      row.addEventListener("click", async (event) => {
+        if (Date.now() < suppressEnterUntil) {
+          event.preventDefault();
+          return;
+        }
         let episode = ep;
         if (!episode.streamUrl && show.seriesId) {
           row.querySelector("span:last-child").textContent = "Loading";
@@ -1984,6 +2535,7 @@ function renderPosterGrid(container, items, handler, limit = Infinity) {
     const card = document.createElement("button");
     card.type = "button";
     card.className = "poster-card focusable";
+    if (item.id) card.dataset.itemId = item.id;
     card.innerHTML = `
       <div class="poster-art" style="background-image:url('${item.image}')"></div>
       <div class="poster-info"><strong>${item.title}</strong><span>${item.category} ${item.year || ""}</span></div>
@@ -2077,8 +2629,11 @@ function openSearchResult(result) {
   }
   if (result.type === "Series") {
     state.selectedSeriesId = result.item.id;
+    suppressEnterUntil = Date.now() + 500;
     setView("series");
     renderSeriesDetail();
+    setTimeout(() => focusSeriesDetail(), 0);
+    loadSeriesEpisodes(result.item).catch(() => {});
     toast(`Opening ${result.item.title}`);
   }
 }
