@@ -62,22 +62,22 @@ http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, logs: clientLogs.slice(-120) });
     }
     if (req.method === "GET" && req.url.startsWith("/api/stream/live/")) {
-      return proxyLiveStream(req, res);
+      return await proxyLiveStream(req, res);
     }
     if (req.method === "GET" && req.url.startsWith("/api/stream-proxy")) {
-      return proxyStreamAsset(req, res);
+      return await proxyStreamAsset(req, res);
     }
     if (req.method === "GET" && req.url.startsWith("/api/transcode-live/")) {
-      return transcodeLive(req, res);
+      return await transcodeLive(req, res);
     }
     if (req.method === "GET" && req.url.startsWith("/api/live-hls/")) {
-      return serveLiveHls(req, res);
+      return await serveLiveHls(req, res);
     }
     if (req.method === "GET" && req.url.startsWith("/api/movie-hls/")) {
-      return serveMovieHls(req, res);
+      return await serveMovieHls(req, res);
     }
     if (req.method === "GET" && req.url.startsWith("/api/transcode-movie")) {
-      return transcodeMovie(req, res);
+      return await transcodeMovie(req, res);
     }
     return serveFile(req, res);
   } catch (error) {

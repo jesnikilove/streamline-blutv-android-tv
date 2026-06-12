@@ -1292,7 +1292,7 @@ function appendChannelRows(list, channels, start, size, token) {
     row.dataset.channelId = ch.id;
     row.className = "list-row focusable" + (ch.id === state.selectedChannelId ? " active" : "");
     row.innerHTML = `<span class="row-title">${isFavorite(ch.id) ? "Star " : ""}${ch.name}</span><span class="row-sub">${ch.program}</span>`;
-    row.addEventListener("focus", () => previewChannel(ch, { play: true }));
+    row.addEventListener("focus", () => previewChannel(ch, { play: !isTvApp() }));
     row.addEventListener("click", () => {
       clearTimeout(channelPreviewTimer);
       previewChannel(ch, { play: false });
@@ -1501,6 +1501,7 @@ async function playChannel(ch, showToast, options = {}) {
   }, { once: true });
   await loadVideoSource(player, playableChannelSource(ch));
   player.onerror = () => {
+    if (requestId !== playbackRequestId) return;
     logTvDebug("channel-video-error", { id: ch.id, name: ch.name });
     if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} is not available right now.`);
   };
@@ -1511,8 +1512,9 @@ async function playChannel(ch, showToast, options = {}) {
       $("playState").textContent = preview ? "Preview" : "Playing";
       showPlayerControls(false);
     }).catch(() => {
+      if (requestId !== playbackRequestId) return;
       logTvDebug("channel-play-rejected", { id: ch.id, name: ch.name });
-      if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} could not start.`);
+      if (!preview) showVideoError(`${ch.name} could not start.`);
     });
   }
 }
