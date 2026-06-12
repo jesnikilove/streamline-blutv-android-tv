@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { Readable } = require("stream");
 const { spawn } = require("child_process");
 
@@ -12,6 +13,7 @@ const vodLimit = readLimit(process.env.VOD_LIMIT);
 const seriesLimit = readLimit(process.env.SERIES_LIMIT);
 let providerSession = invalidSession();
 const liveHlsSessions = new Map();
+const movieHlsSessions = new Map();
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -61,6 +63,9 @@ http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url.startsWith("/api/live-hls/")) {
       return serveLiveHls(req, res);
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/movie-hls/")) {
+      return serveMovieHls(req, res);
     }
     if (req.method === "GET" && req.url.startsWith("/api/transcode-movie")) {
       return transcodeMovie(req, res);
@@ -489,6 +494,83 @@ function waitForFile(filePath, timeoutMs) {
     };
     check();
   });
+}
+
+async function serveMovieHls(req, res) {
+  const requestUrl = new URL(req.url, `http://${host}:${port}`);
+  const match = requestUrl.pathname.match(/^\/api\/movie-hls\/([^/]+)\/([^/]+)$/);
+  if (!match) throw new Error("Missing movie HLS stream.");
+  const mediaId = decodeURIComponent(match[1]);
+  const fileName = decodeURIComponent(match[2]);
+  const movieUrl = requestUrl.searchParams.get("url");
+  const session = await ensureMovieHlsSession(mediaId, movieUrl);
+  if (fileName === "playlist.m3u8") {
+    await waitForFile(session.playlistPath, 9000);
+  }
+  const filePath = path.resolve(session.dir, fileName);
+  if (!filePath.startsWith(session.dir)) throw new Error("Invalid movie segment.");
+  fs.readFile(filePath, (error, data) => {
+    if (error) return sendJson(res, 404, { ok: false, message: "Movie is starting. Try again." });
+    const contentType = fileName.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t";
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-store"
+    });
+    res.end(data);
+  });
+}
+
+async function ensureMovieHlsSession(mediaId, movieUrl) {
+  if (!movieUrl) throw new Error("Missing movie URL.");
+  const safeId = safePathId(mediaId || crypto.createHash("sha1").update(movieUrl).digest("hex"));
+  const existing = movieHlsSessions.get(safeId);
+  if (existing && existing.source === movieUrl && !existing.ffmpeg.killed) {
+    existing.lastUsed = Date.now();
+    return existing;
+  }
+  if (existing && !existing.ffmpeg.killed) existing.ffmpeg.kill("SIGKILL");
+  const dir = path.join("/private/tmp", "streamline-blutv-movie-hls", safeId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.readdirSync(dir).forEach((file) => {
+    try { fs.unlinkSync(path.join(dir, file)); } catch (_error) {}
+  });
+  const audioMap = await preferredAudioMap(movieUrl);
+  const playlistPath = path.join(dir, "playlist.m3u8");
+  const args = [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-i", movieUrl,
+    "-map", "0:v:0",
+  ];
+  if (audioMap) args.push("-map", audioMap);
+  else args.push("-an");
+  args.push(
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-pix_fmt", "yuv420p",
+    "-profile:v", "baseline",
+    "-level", "3.1",
+    "-c:a", "aac",
+    "-b:a", "160k",
+    "-metadata:s:a:0", "language=eng",
+    "-f", "hls",
+    "-hls_time", "4",
+    "-hls_list_size", "8",
+    "-hls_flags", "delete_segments+append_list+omit_endlist",
+    "-hls_segment_filename", path.join(dir, "seg_%05d.ts"),
+    playlistPath
+  );
+  const ffmpeg = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "ignore"] });
+  const session = { dir, playlistPath, ffmpeg, source: movieUrl, lastUsed: Date.now() };
+  movieHlsSessions.set(safeId, session);
+  ffmpeg.on("close", () => {
+    if (movieHlsSessions.get(safeId) === session) movieHlsSessions.delete(safeId);
+  });
+  return session;
+}
+
+function safePathId(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 96) || "media";
 }
 
 function preferredAudioMap(movieUrl) {

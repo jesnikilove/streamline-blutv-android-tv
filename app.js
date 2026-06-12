@@ -1510,11 +1510,10 @@ async function playMedia(item, showToast = true) {
 function playableMediaSource(item) {
   const url = item.streamUrl || videoUrl;
   if (!isProviderLocalUrl(url)) return url;
-  return `/api/transcode-movie?url=${encodeURIComponent(url)}`;
+  return `/api/movie-hls/${encodeURIComponent(item.id || item.title || "movie")}/playlist.m3u8?url=${encodeURIComponent(url)}`;
 }
 
 function playableChannelSource(ch) {
-  if (isTvApp() && ch?.streamId) return `/api/live-hls/${encodeURIComponent(ch.streamId)}/playlist.m3u8`;
   return ch?.streamUrl || "";
 }
 
