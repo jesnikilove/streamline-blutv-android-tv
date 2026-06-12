@@ -21,6 +21,7 @@ let suppressEnterUntil = 0;
 let backExitArmed = false;
 let backExitTimer = null;
 let nativePlayerActive = false;
+let nativePlayerPlaying = false;
 
 const libraryIndex = {
   channelCategoryMap: new Map(),
@@ -316,6 +317,7 @@ function startNativePlayer(url) {
 
 function stopNativePlayer() {
   nativePlayerActive = false;
+  nativePlayerPlaying = false;
   try {
     window.StreamlineNativePlayer?.stop?.();
   } catch (_error) {}
@@ -325,17 +327,20 @@ function installNativePlayerBridge() {
   if (!isTvApp()) return;
   window.streamlineNativeOnReady = () => {
     nativePlayerActive = true;
+    nativePlayerPlaying = true;
     $("playState").textContent = "Playing";
     showPlayerControls(false);
     logTvDebug("native-player-ready", {});
   };
   window.streamlineNativeOnError = (message) => {
     nativePlayerActive = false;
+    nativePlayerPlaying = false;
     logTvDebug("native-player-error", { message: message || "" });
     showVideoError(message || "Playback failed.");
   };
   window.streamlineNativeOnStopped = () => {
     nativePlayerActive = false;
+    nativePlayerPlaying = false;
   };
 }
 
@@ -1489,7 +1494,7 @@ function showPlayerControls(show) {
   $("videoFrame").classList.toggle("controls-open", show);
   $("controlMediaTitle").textContent = state.currentMedia?.title || $("nowTitle").textContent || "Paused";
   if (hasNativePlayer() && nativePlayerActive) {
-    $("playerPlayPause").textContent = window.StreamlineNativePlayer.isPlaying() ? "Pause" : "Play";
+    $("playerPlayPause").textContent = nativePlayerPlaying ? "Pause" : "Play";
   } else {
     $("playerPlayPause").textContent = $("videoPlayer").paused ? "Play" : "Pause";
   }
@@ -1517,8 +1522,15 @@ function updatePlayerOptionStates() {
 
 function togglePlayerPlayback() {
   if (hasNativePlayer() && nativePlayerActive) {
-    if (window.StreamlineNativePlayer.isPlaying()) window.StreamlineNativePlayer.pause();
-    else window.StreamlineNativePlayer.resume();
+    try {
+      if (nativePlayerPlaying) {
+        window.StreamlineNativePlayer.pause();
+        nativePlayerPlaying = false;
+      } else {
+        window.StreamlineNativePlayer.resume();
+        nativePlayerPlaying = true;
+      }
+    } catch (_error) {}
     showPlayerControls(true);
     return;
   }

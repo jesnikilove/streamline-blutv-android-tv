@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const { Readable } = require("stream");
 const { spawn } = require("child_process");
@@ -26,7 +27,8 @@ const mime = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
-  ".svg": "image/svg+xml"
+  ".svg": "image/svg+xml",
+  ".apk": "application/vnd.android.package-archive"
 };
 
 http.createServer(async (req, res) => {
@@ -79,6 +81,9 @@ http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url.startsWith("/api/transcode-movie")) {
       return await transcodeMovie(req, res);
     }
+    if ((req.method === "GET" || req.method === "HEAD") && req.url.split("?")[0] === "/tv.apk") {
+      return serveTvApk(req, res);
+    }
     return serveFile(req, res);
   } catch (error) {
     return sendJson(res, 400, { ok: false, message: error.message || "Request failed." });
@@ -111,6 +116,46 @@ function serveFile(req, res) {
     if (error) return sendJson(res, 404, { ok: false, message: "Not found" });
     res.writeHead(200, { "Content-Type": mime[path.extname(filePath)] || "application/octet-stream" });
     res.end(data);
+  });
+}
+
+function tvApkCandidates() {
+  return [
+    process.env.TV_APK_PATH,
+    path.join(os.homedir(), "Desktop", "tv.apk"),
+    path.join(root, "..", "StreamlineBluTV-FireTV-App", "dist", "StreamlineBluTV-FireTV.apk")
+  ].filter(Boolean);
+}
+
+function resolveTvApkPath() {
+  for (const candidate of tvApkCandidates()) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function serveTvApk(req, res) {
+  const apkPath = resolveTvApkPath();
+  if (!apkPath) {
+    return sendJson(res, 404, { ok: false, message: "tv.apk not found on this Mac." });
+  }
+  fs.stat(apkPath, (error, stat) => {
+    if (error) return sendJson(res, 404, { ok: false, message: "tv.apk not found on this Mac." });
+    const headers = {
+      "Content-Type": "application/vnd.android.package-archive",
+      "Content-Disposition": 'attachment; filename="tv.apk"',
+      "Content-Length": stat.size,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "no-store",
+      "Connection": "close"
+    };
+    if (req.method === "HEAD") {
+      res.writeHead(200, headers);
+      res.end();
+      return;
+    }
+    res.writeHead(200, headers);
+    fs.createReadStream(apkPath).pipe(res);
   });
 }
 
