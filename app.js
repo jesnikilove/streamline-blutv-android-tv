@@ -1,5 +1,5 @@
 const videoUrl = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
-const gridLimit = 240;
+const gridLimit = 120;
 const liveInitialLimit = 140;
 const liveChunkSize = 180;
 const guideInitialLimit = 80;
@@ -2726,9 +2726,15 @@ function nativeSeekToSeconds(seconds) {
   if (!hasNativePlayer() || !nativePlayerActive) return false;
   try {
     if (isVodPlaybackActive() && nativeVodUsesTranscodePipe()) {
-      const currentMs = window.StreamlineNativePlayer?.getCurrentPosition?.() || seekBarAnchorPositionMs || 0;
+      const nativeMs = window.StreamlineNativePlayer?.getCurrentPosition?.() || 0;
+      const currentMs = Math.max(nativeMs, nativeVodRestartTargetMs || 0, seekBarAnchorPositionMs || 0);
       const targetMs = Math.max(0, currentMs + Math.round(seconds * 1000));
-      if (restartNativeVodAt(targetMs)) return true;
+      seekBarAnchorPositionMs = targetMs;
+      pendingNativeSeekMs = targetMs;
+      if (restartNativeVodAt(targetMs)) {
+        pendingNativeSeekMs = null;
+        return true;
+      }
     }
     if (typeof window.StreamlineNativePlayer?.seekBySeconds === "function") {
       window.StreamlineNativePlayer.seekBySeconds(Math.round(seconds));
@@ -4104,7 +4110,7 @@ function renderSearch() {
   const terms = q.split(" ").filter(Boolean);
   const results = (q ? libraryIndex.searchItems.filter((item) => {
     return terms.every((term) => item.searchText.includes(term));
-  }) : libraryIndex.searchItems).slice(0, 80);
+  }) : libraryIndex.searchItems).slice(0, 40);
   const box = $("searchResults");
   box.innerHTML = "";
   if (results.length === 0) {
