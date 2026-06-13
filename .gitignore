@@ -1,0 +1,5 @@
+.provider-local.json
+channel-audit-results.json
+channel-audit-failed.txt
+channel-audit-*-results.json
+channel-audit-*-failed.txt

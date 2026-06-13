@@ -5,6 +5,7 @@ const liveChunkSize = 180;
 const guideInitialLimit = 80;
 const guideChunkSize = 120;
 const providerRefreshMs = 1000 * 60 * 60 * 6;
+const previewDelayMs = 250;
 const providerCacheDbName = "StreamlineBluTV";
 const providerCacheStore = "providerCache";
 let hlsPlayer = null;
@@ -13,6 +14,7 @@ let liveRenderToken = 0;
 let cacheSaveTimer = null;
 let searchRenderFrame = null;
 let providerSessionReady = false;
+let sessionWarmPromise = null;
 let channelPreviewTimer = null;
 let playbackRequestId = 0;
 let playMediaLockUntil = 0;
@@ -22,6 +24,25 @@ let backExitArmed = false;
 let backExitTimer = null;
 let nativePlayerActive = false;
 let nativePlayerPlaying = false;
+let nativeVodDisabled = false;
+let nativeVodRetry = false;
+let previewPlaybackKey = "";
+let channelInfoTimer = null;
+let controlsVisible = false;
+let nativeMenuPauseRequested = false;
+let lastNativeDurationMs = 0;
+let seekBarEditing = false;
+let seekBarRefreshTimer = null;
+let nativeDurationPollTimer = null;
+let seekBarAnchorValue = 0;
+let seekBarAnchorPositionMs = 0;
+let pendingNativeSeekMs = null;
+let nativeVodRestartTargetMs = null;
+let nativeVodRestartAt = 0;
+const nativeVodRestartThresholdMs = 90000;
+const nativeVodNearTargetMs = 15000;
+let tvDebugLogAt = 0;
+let previewLayoutObserver = null;
 
 const libraryIndex = {
   channelCategoryMap: new Map(),
@@ -128,6 +149,7 @@ function channel(id, name, category, program, description, image) {
     program,
     description,
     image,
+    streamUrl: videoUrl,
     guide: [
       { time: "7:00 PM", title: program },
       { time: "7:30 PM", title: category + " Tonight" },
@@ -156,26 +178,169 @@ function series(id, title, category, seasons, image) {
 const $ = (id) => document.getElementById(id);
 
 function init() {
+  if (localStorage.getItem("streamlineLoggedIn") === "true") {
+    document.documentElement.classList.add("streamline-autologin");
+  }
   document.body.classList.toggle("tv-app", isTvApp());
   installTvDebugLogging();
   installBackHandler();
   installNativePlayerBridge();
-  const hasSyncCache = loadCachedProviderLibrary();
+  restoreAppSavedLogin();
+  if (isTvApp()) {
+    const player = $("videoPlayer");
+    player?.removeAttribute("loop");
+    installPreviewFrameLayoutWatcher();
+    installTvSeekControls();
+  }
   bindLogin();
   renderPlaylistProfiles();
   bindNavigation();
   bindActions();
-  renderAll();
   updateClock();
   setInterval(updateClock, 1000 * 30);
+  void bootstrapApp();
+}
 
-  if (localStorage.getItem("streamlineLoggedIn") === "true") {
-    showHome();
-    restoreSavedProviderSession();
-  } else {
-    $("loginButton").focus();
+function showBootScreen(message = "Loading your library...") {
+  $("bootStatus").textContent = message;
+  $("bootScreen").classList.remove("hidden");
+  $("loginScreen").classList.add("hidden");
+  $("homeScreen").classList.add("hidden");
+}
+
+function hideBootScreen() {
+  $("bootScreen").classList.add("hidden");
+  document.documentElement.classList.remove("streamline-autologin");
+}
+
+function installTvSeekControls() {
+  if (!isTvApp()) {
+    $("seekBar")?.classList.add("focusable");
+    $("seekBar")?.setAttribute("tabindex", "0");
+    $("seekBarFocus")?.classList.add("hidden");
+    return;
   }
-  if (!hasSyncCache) hydrateLargeProviderCache();
+  $("seekBar")?.classList.remove("focusable");
+  $("seekBar")?.setAttribute("tabindex", "-1");
+}
+
+function isSeekControlFocused() {
+  const active = document.activeElement;
+  if (active?.id === "seekBar" || active?.id === "seekBarFocus") return true;
+  return !!$("seekBarFocus")?.contains(active);
+}
+
+function updateSeekBarHint() {
+  const hint = $("seekBarHint");
+  if (!hint) return;
+  const durationMs = getNativeDurationMs();
+  const percent = Number($("seekBar")?.value || 0) / 10;
+  hint.textContent = durationMs > 0
+    ? `Timeline ${percent.toFixed(0)}% · Left/Right move · Select or Up jumps`
+    : "Timeline · Down opens · Left/Right move · Select or Up jumps";
+}
+
+function syncTvSeekUi() {
+  if (!isTvApp()) return;
+  const wrap = $("seekBarFocus");
+  if (!wrap) return;
+  const show = nativeMenuOverlayActive() && isVodPlaybackActive();
+  wrap.classList.toggle("hidden", !show);
+}
+
+function bumpSeekBarForNativeSeek(seconds) {
+  const durationMs = getNativeDurationMs();
+  if (durationMs > 0) {
+    const nextSec = Math.max(0, Math.min(durationMs / 1000, getNativeCurrentTimeSec() + seconds));
+    $("seekBar").value = String(Math.round((nextSec / (durationMs / 1000)) * 1000));
+  } else {
+    bumpSeekBarRelative(seconds > 0 ? 35 : -18);
+  }
+  if (isSeekControlFocused()) updateSeekBarHint();
+}
+
+function bumpSeekBarRelative(units) {
+  const bar = $("seekBar");
+  if (!bar || bar.disabled) return;
+  const next = Math.max(0, Math.min(1000, Number(bar.value) + units));
+  bar.value = String(next);
+}
+
+function beginNativeDurationPoll() {
+  stopNativeDurationPoll();
+  let attempts = 0;
+  nativeDurationPollTimer = setInterval(() => {
+    attempts += 1;
+    const durationMs = getNativeDurationMs();
+    if (durationMs > 0) {
+      if (!seekBarEditing && !isSeekControlFocused()) updateSeekBar();
+      updatePlayerOptionStates();
+    }
+    if (durationMs > 0 || attempts >= 60) stopNativeDurationPoll();
+  }, 500);
+}
+
+function stopNativeDurationPoll() {
+  clearInterval(nativeDurationPollTimer);
+  nativeDurationPollTimer = null;
+}
+
+async function bootstrapApp() {
+  const loggedIn = localStorage.getItem("streamlineLoggedIn") === "true";
+  const wantsProvider = loggedIn && !!savedProviderPayloadText() && localStorage.getItem("streamlineProviderName") !== "Demo Provider";
+
+  if (loggedIn && wantsProvider) {
+    showBootScreen("Loading your library...");
+  } else if (loggedIn) {
+    showBootScreen("Starting Streamline BluTV...");
+  }
+
+  const hasSyncCache = loadCachedProviderLibrary({ skipDemoFallback: wantsProvider });
+
+  if (!loggedIn || !wantsProvider) {
+    if (!state.usingProviderData) rebuildLibraryIndex();
+    renderAll();
+  }
+
+  if (!loggedIn) {
+    hideBootScreen();
+    $("loginScreen").classList.remove("hidden");
+    $("loginButton").focus();
+    return;
+  }
+
+  if (!wantsProvider) {
+    hideBootScreen();
+    showHome();
+    return;
+  }
+
+  try {
+    if (!hasSyncCache) {
+      const hydrated = await hydrateLargeProviderCache();
+      if (!hydrated && !state.usingProviderData) {
+        showBootScreen("Connecting to provider...");
+        await refreshProviderCatalog(JSON.parse(savedProviderPayloadText()), { quiet: true });
+      }
+    }
+    if (!state.usingProviderData) {
+      showBootScreen("Could not load your library. Check Settings to sign in again.");
+      return;
+    }
+    renderAll();
+    hideBootScreen();
+    showHome();
+    await restoreSavedProviderSession();
+  } catch (_error) {
+    if (state.usingProviderData) {
+      renderAll();
+      hideBootScreen();
+      showHome();
+      restoreSavedProviderSession();
+      return;
+    }
+    showBootScreen("Could not load your library. Check Settings to sign in again.");
+  }
 }
 
 function installTvDebugLogging() {
@@ -190,6 +355,10 @@ function installTvDebugLogging() {
 
 function logTvDebug(event, details = {}) {
   if (!isTvApp()) return;
+  const noisy = /play-channel-start|native-player-ready|load-video-source/.test(event);
+  const now = Date.now();
+  if (noisy && now - tvDebugLogAt < 2500) return;
+  if (noisy) tvDebugLogAt = now;
   const player = $("videoPlayer");
   const payload = {
     event,
@@ -218,6 +387,7 @@ function logTvDebug(event, details = {}) {
 
 function installBackHandler() {
   window.streamlineHandleDeviceBack = () => handleAppBack();
+  window.streamlineHandleDeviceSelect = () => handleDeviceSelect();
   if (!isTvApp()) return;
   try {
     window.history.replaceState({ streamline: true }, "", window.location.href);
@@ -231,26 +401,28 @@ function installBackHandler() {
   }
 }
 
-function loadCachedProviderLibrary() {
+function loadCachedProviderLibrary(options = {}) {
+  const skipDemoFallback = !!options.skipDemoFallback;
   const cache = localStorage.getItem("streamlineProviderCache");
   if (!cache) {
-    rebuildLibraryIndex();
+    if (!skipDemoFallback) rebuildLibraryIndex();
     return false;
   }
   try {
     const parsed = JSON.parse(cache);
     if (!parsed.library && parsed.savedAt) {
-      rebuildLibraryIndex();
+      if (!skipDemoFallback) rebuildLibraryIndex();
       return false;
     }
     data = parsed.library || parsed;
     prepareProviderLibrary(data);
     state.usingProviderData = true;
     selectFirstAvailableItems();
+    startProviderSessionWarm();
     return true;
   } catch (_error) {
     localStorage.removeItem("streamlineProviderCache");
-    rebuildLibraryIndex();
+    if (!skipDemoFallback) rebuildLibraryIndex();
     return false;
   }
 }
@@ -274,12 +446,7 @@ async function hydrateLargeProviderCache() {
     state.usingProviderData = true;
     selectFirstAvailableItems();
     updateCacheInfo();
-    if (localStorage.getItem("streamlineLoggedIn") === "true") {
-      showHome();
-      restoreSavedProviderSession();
-    } else {
-      renderAll();
-    }
+    startProviderSessionWarm();
     return true;
   } catch (_error) {
     return false;
@@ -299,6 +466,182 @@ function hasNativePlayer() {
   }
 }
 
+function useNativePlayerForVod() {
+  return hasNativePlayer() && !nativeVodDisabled;
+}
+
+function channelNeedsTranscodedPreview(ch) {
+  const name = String(ch?.name || "");
+  return /\b(4k|uhd|uhd4|2160|hevc)\b/i.test(name);
+}
+
+function channelPrefersTranscodedLive(ch) {
+  return isTvApp() && channelNeedsTranscodedPreview(ch);
+}
+
+function shouldUseNativeLivePlayer(options = {}) {
+  return hasNativePlayer() && !options.forceWeb;
+}
+
+function setPreviewFramePoster(ch) {
+  const frame = $("videoFrame");
+  if (!frame || !ch?.image) return;
+  frame.style.backgroundImage = `url("${ch.image}")`;
+  frame.style.backgroundSize = "cover";
+  frame.style.backgroundPosition = "center";
+  frame.style.backgroundColor = "transparent";
+}
+
+function clearPreviewFramePoster() {
+  const frame = $("videoFrame");
+  if (!frame) return;
+  frame.style.backgroundImage = "";
+  frame.style.backgroundSize = "";
+  frame.style.backgroundPosition = "";
+}
+
+function getNativePlayerLayout(fullscreen = false) {
+  if (fullscreen) {
+    return { left: 0, top: 0, width: 0, height: 0, fullscreen: 1 };
+  }
+  const frame = $("videoFrame");
+  if (!frame) return null;
+  const rect = frame.getBoundingClientRect();
+  const vw = window.innerWidth || document.documentElement.clientWidth || 1;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 1;
+  const toBp = (value, total) => Math.max(1, Math.round((value / total) * 10000));
+  return {
+    left: toBp(rect.left, vw),
+    top: toBp(rect.top, vh),
+    width: toBp(Math.ceil(rect.width), vw),
+    height: toBp(Math.ceil(rect.height), vh),
+    fullscreen: 0
+  };
+}
+
+function installPreviewFrameLayoutWatcher() {
+  const frame = $("videoFrame");
+  if (!frame || previewLayoutObserver || !("ResizeObserver" in window)) return;
+  previewLayoutObserver = new ResizeObserver(() => {
+    if (nativePlayerActive && !document.body.classList.contains("tv-player-open") && !nativeMenuOverlayActive()) {
+      repositionNativePlayer(false);
+    }
+  });
+  previewLayoutObserver.observe(frame);
+}
+
+function syncNativePlayingState() {
+  if (!hasNativePlayer() || !nativePlayerActive) return;
+  if (nativeMenuPauseRequested) {
+    nativePlayerPlaying = false;
+    return;
+  }
+  try {
+    if (typeof window.StreamlineNativePlayer?.isPlaying === "function") {
+      nativePlayerPlaying = window.StreamlineNativePlayer.isPlaying();
+    }
+  } catch (_error) {}
+}
+
+function callNativePlayWithLayout(url, fullscreen = false) {
+  const layout = getNativePlayerLayout(fullscreen);
+  if (!layout) return false;
+  window.StreamlineNativePlayer.playWithLayout(
+    absoluteStreamUrl(url),
+    Math.round(layout.left),
+    Math.round(layout.top),
+    Math.round(layout.width),
+    Math.round(layout.height),
+    layout.fullscreen
+  );
+  return true;
+}
+
+function nativeMenuOverlayActive() {
+  return controlsVisible || document.body.classList.contains("tv-player-menu-open");
+}
+
+function repositionNativePlayer(fullscreen = false) {
+  if (!hasNativePlayer() || !nativePlayerActive) return;
+  if (nativeMenuOverlayActive()) return;
+  const layout = getNativePlayerLayout(fullscreen);
+  if (!layout) return;
+  try {
+    window.StreamlineNativePlayer.repositionLayout(
+      Math.round(layout.left),
+      Math.round(layout.top),
+      Math.round(layout.width),
+      Math.round(layout.height),
+      layout.fullscreen
+    );
+  } catch (_error) {}
+}
+
+function invokeNativePlay(url, fullscreen = false) {
+  if (window.StreamlineNativePlayer?.playWithLayout) {
+    callNativePlayWithLayout(url, fullscreen);
+  } else if (window.StreamlineNativePlayer?.playLive) {
+    window.StreamlineNativePlayer.playLive(absoluteStreamUrl(url), fullscreen ? 1 : 0);
+  } else {
+    window.StreamlineNativePlayer.play(absoluteStreamUrl(url));
+  }
+}
+
+function startNativePlayer(url, fullscreen = false) {
+  if (!hasNativePlayer() || !url) return false;
+  try {
+    nativePlayerActive = true;
+    nativePlayerPlaying = false;
+    document.body.classList.add("native-live-active");
+    if (fullscreen) {
+      invokeNativePlay(url, true);
+    } else {
+      const layout = getNativePlayerLayout(false);
+      const startPreview = () => {
+        if (!nativePlayerActive) return;
+        invokeNativePlay(url, false);
+        requestAnimationFrame(() => repositionNativePlayer(false));
+      };
+      if (layout && layout.width > 50 && layout.height > 50) {
+        startPreview();
+      } else {
+        requestAnimationFrame(() => requestAnimationFrame(startPreview));
+      }
+    }
+    return true;
+  } catch (error) {
+    nativePlayerActive = false;
+    nativePlayerPlaying = false;
+    document.body.classList.remove("native-live-active");
+    logTvDebug("native-player-start-error", { message: error?.message || String(error) });
+    return false;
+  }
+}
+
+function stopNativePlayer() {
+  nativePlayerActive = false;
+  nativePlayerPlaying = false;
+  nativeMenuPauseRequested = false;
+  pendingNativeSeekMs = null;
+  nativeVodRestartTargetMs = null;
+  nativeVodRestartAt = 0;
+  stopNativeDurationPoll();
+  document.body.classList.remove("native-live-active");
+  clearPreviewFramePoster();
+  try {
+    window.StreamlineNativePlayer?.stop?.();
+  } catch (_error) {}
+}
+
+function autoPlayLiveOnStartup() {
+  if (isTvApp()) {
+    const ch = selectedChannel();
+    if (ch) scheduleChannelPreview(ch);
+    return;
+  }
+  playSelectedChannel(false);
+}
+
 function absoluteStreamUrl(url) {
   if (!url) return "";
   try {
@@ -308,57 +651,125 @@ function absoluteStreamUrl(url) {
   }
 }
 
-function startNativePlayer(url) {
-  if (!hasNativePlayer() || !url) return false;
-  nativePlayerActive = true;
-  window.StreamlineNativePlayer.play(absoluteStreamUrl(url));
-  return true;
-}
-
-function stopNativePlayer() {
-  nativePlayerActive = false;
-  nativePlayerPlaying = false;
-  try {
-    window.StreamlineNativePlayer?.stop?.();
-  } catch (_error) {}
-}
-
 function installNativePlayerBridge() {
   if (!isTvApp()) return;
+  const openPlayerMenuImpl = openPlayerMenu;
+  window.openPlayerMenu = () => openPlayerMenuImpl();
   window.streamlineNativeOnReady = () => {
     nativePlayerActive = true;
-    nativePlayerPlaying = true;
-    $("playState").textContent = "Playing";
-    showPlayerControls(false);
-    logTvDebug("native-player-ready", {});
+    const menuOpen = nativeMenuOverlayActive() || nativeMenuPauseRequested;
+    nativePlayerPlaying = !menuOpen;
+    document.body.classList.add("native-live-active");
+    document.body.classList.remove("channel-unavailable");
+    clearVideoError();
+    if (menuOpen) {
+      try {
+        window.StreamlineNativePlayer?.pause?.();
+        hideNativePlayerForMenu();
+      } catch (_error) {}
+    } else if (!nativeMenuOverlayActive()) {
+      repositionNativePlayer(document.body.classList.contains("tv-player-open"));
+      requestAnimationFrame(() => {
+        if (!nativeMenuOverlayActive()) {
+          repositionNativePlayer(document.body.classList.contains("tv-player-open"));
+        }
+      });
+    }
+    try {
+      if (!menuOpen) window.StreamlineNativePlayer?.setVolume?.(1);
+    } catch (_error) {}
+    if (!menuOpen) clearPreviewFramePoster();
+    $("playState").textContent = menuOpen
+      ? "Paused"
+      : (document.body.classList.contains("tv-player-open") ? "Playing" : "Preview");
+    if (!menuOpen) showPlayerControls(false);
+    else if (controlsVisible) showPlayerControls(true, { focusId: "playerPlayPause" });
+    updatePlayerOptionStates();
+    if (isVodPlaybackActive()) beginNativeDurationPoll();
+    if (nativeVodRestartTargetMs != null && Date.now() - nativeVodRestartAt < 30000) {
+      seekBarAnchorPositionMs = nativeVodRestartTargetMs;
+      syncSeekBarAnchor();
+      scheduleSeekBarRefresh();
+    }
+    logTvDebug("native-player-ready", {
+      menuOpen,
+      durationMs: getNativeDurationMs(),
+      positionMs: window.StreamlineNativePlayer?.getCurrentPosition?.() || 0,
+      restartTargetMs: nativeVodRestartTargetMs
+    });
+    if (nativeVodRestartTargetMs != null && Date.now() - nativeVodRestartAt < 30000) {
+      nativeVodRestartTargetMs = null;
+    }
+    if (state.currentMedia?.type === "Channel") {
+      const ch = data.channels.find((item) => item.id === state.currentMedia.id) || selectedChannel();
+      if (ch) renderSelectedChannel({ loadGuide: false });
+    }
   };
   window.streamlineNativeOnError = (message) => {
+    logTvDebug("native-player-error", { message: message || "" });
+    const media = state.currentMedia;
+    if (media?.type === "Channel" && media.id) {
+      const ch = data.channels.find((item) => item.id === media.id) || selectedChannel();
+      if (ch && !media.nativeTranscodeTried && !channelPrefersTranscodedLive(ch)) {
+        state.currentMedia = { ...media, nativeTranscodeTried: true };
+        $("playState").textContent = "Loading";
+        playChannel(ch, false, {
+          preview: !document.body.classList.contains("tv-player-open"),
+          useTranscoded: true
+        }).catch(() => showChannelPlaybackError(message || "Playback failed.", ch));
+        return;
+      }
+      showChannelPlaybackError(message || "Playback failed.", ch);
+      return;
+    }
     nativePlayerActive = false;
     nativePlayerPlaying = false;
-    logTvDebug("native-player-error", { message: message || "" });
+    document.body.classList.remove("native-live-active");
+    if ((media?.type === "Movie" || media?.type === "Episode") && !media.nativeTranscodeTried) {
+      state.currentMedia = { ...media, nativeTranscodeTried: true };
+      playMedia({ ...media, forceTranscode: true }, false).finally(() => {
+        nativeVodRetry = false;
+      });
+      return;
+    }
+    if ((media?.type === "Movie" || media?.type === "Episode") && !nativeVodRetry) {
+      nativeVodRetry = true;
+      nativeVodDisabled = true;
+      playMedia(media, false).finally(() => {
+        nativeVodRetry = false;
+      });
+      return;
+    }
     showVideoError(message || "Playback failed.");
   };
   window.streamlineNativeOnStopped = () => {
     nativePlayerActive = false;
     nativePlayerPlaying = false;
+    document.body.classList.remove("native-live-active");
+    clearPreviewFramePoster();
   };
 }
 
 async function restoreSavedProviderSession() {
   const payloadText = savedProviderPayloadText();
   if (!payloadText || !state.usingProviderData) return;
+  startProviderSessionWarm();
   const meta = cachedProviderMeta();
   if (Date.now() - Number(meta.savedAt || 0) < providerRefreshMs) {
-    warmProviderSession(JSON.parse(payloadText))
-      .then(() => playSelectedChannel(false))
+    startProviderSessionWarm()
+      .then(() => autoPlayLiveOnStartup())
       .catch(() => {});
     updateCacheInfo();
     return;
   }
   try {
     await refreshProviderCatalog(JSON.parse(payloadText), { quiet: true });
+    autoPlayLiveOnStartup();
   } catch (_error) {
     updateCacheInfo("Saved library ready. Provider refresh will try again later.");
+    startProviderSessionWarm()
+      .then(() => autoPlayLiveOnStartup())
+      .catch(() => {});
   }
 }
 
@@ -366,12 +777,24 @@ function savedProviderPayloadText() {
   return sessionStorage.getItem("streamlineLastProviderPayload") || localStorage.getItem("streamlineRememberedProviderPayload");
 }
 
+function startProviderSessionWarm() {
+  if (providerSessionReady) return Promise.resolve(true);
+  if (sessionWarmPromise) return sessionWarmPromise;
+  const payloadText = savedProviderPayloadText();
+  if (!payloadText || !state.usingProviderData) return Promise.resolve(false);
+  sessionWarmPromise = warmProviderSession(JSON.parse(payloadText))
+    .then(() => true)
+    .catch(() => false)
+    .finally(() => {
+      sessionWarmPromise = null;
+    });
+  return sessionWarmPromise;
+}
+
 async function ensureProviderSessionReady() {
   if (!state.usingProviderData || providerSessionReady) return true;
-  const payloadText = savedProviderPayloadText();
-  if (!payloadText) return false;
-  await warmProviderSession(JSON.parse(payloadText));
-  return true;
+  await startProviderSessionWarm();
+  return providerSessionReady;
 }
 
 async function warmProviderSession(payload) {
@@ -436,7 +859,47 @@ function saveLogin(payload) {
   localStorage.setItem("streamlineProviderName", provider || "Demo Provider");
   localStorage.setItem("streamlineLoginMode", payload?.mode || state.loginMode);
   localStorage.setItem("streamlineLoggedIn", "true");
-  if (payload) localStorage.setItem("streamlineRememberedProviderPayload", JSON.stringify(payload));
+  if (payload) {
+    localStorage.setItem("streamlineRememberedProviderPayload", JSON.stringify(payload));
+    persistAppSavedLogin(payload);
+  }
+}
+
+function persistAppSavedLogin(payload) {
+  if (!isTvApp() || !payload) return;
+  try {
+    window.StreamlineAppStorage?.saveLogin?.(JSON.stringify(payload));
+  } catch (_error) {}
+}
+
+function restoreAppSavedLogin() {
+  if (!isTvApp()) return false;
+  const payloadText = localStorage.getItem("streamlineRememberedProviderPayload");
+  if (localStorage.getItem("streamlineLoggedIn") === "true" && payloadText) {
+    try {
+      persistAppSavedLogin(JSON.parse(payloadText));
+    } catch (_error) {}
+    return false;
+  }
+  try {
+    const saved = window.StreamlineAppStorage?.readLogin?.();
+    if (!saved) return false;
+    const payload = JSON.parse(saved);
+    localStorage.setItem("streamlineRememberedProviderPayload", saved);
+    localStorage.setItem("streamlineLoggedIn", "true");
+    localStorage.setItem("streamlineProviderName", payload.server || payload.playlistUrl || "Provider");
+    localStorage.setItem("streamlineLoginMode", payload.mode || "xtream");
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function clearAppSavedLogin() {
+  if (!isTvApp()) return;
+  try {
+    window.StreamlineAppStorage?.clearLogin?.();
+  } catch (_error) {}
 }
 
 function restoreRememberedLoginForm() {
@@ -573,6 +1036,7 @@ async function refreshProviderCatalog(payload, options = {}) {
   saveLogin(payload);
   persistProviderCache(parsed.data);
   updateCacheInfo();
+  startProviderSessionWarm();
   if (quiet) renderCurrentView();
   return parsed.data;
 }
@@ -683,19 +1147,17 @@ function rebuildLibraryIndex() {
   libraryIndex.channelCategoryMap = new Map();
   libraryIndex.smartCategoryMap = new Map();
   libraryIndex.channelCounts = new Map();
+  libraryIndex.searchItems = null;
 
   data.channels.forEach((ch) => {
     const category = ch.category || "Live TV";
     if (!libraryIndex.channelCategoryMap.has(category)) libraryIndex.channelCategoryMap.set(category, []);
     libraryIndex.channelCategoryMap.get(category).push(ch);
   });
+}
 
-  data.categories.forEach((cat) => {
-    const channels = channelsForCategoryUncached(cat);
-    libraryIndex.channelCounts.set(cat, channels.length);
-    if (smartCategoryRules.some((rule) => rule.name === cat)) libraryIndex.smartCategoryMap.set(cat, channels);
-  });
-
+function ensureSearchIndex() {
+  if (libraryIndex.searchItems) return;
   libraryIndex.searchItems = [
     ...data.channels.map((item) => ({ title: item.name, subtitle: item.program, type: "Channel", image: item.image, item, searchText: normalizeSearch(`${item.name} ${item.program} ${item.category} Channel`) })),
     ...data.movies.map((item) => ({ title: item.title, subtitle: `${item.category} ${item.year || ""}`, type: "Movie", image: item.image, item, searchText: normalizeSearch(`${item.title} ${item.category} ${item.year || ""} Movie`) })),
@@ -703,12 +1165,40 @@ function rebuildLibraryIndex() {
   ];
 }
 
+function englishMovieRank(movie) {
+  const title = movie?.title || "";
+  const category = movie?.category || "";
+  const haystack = `${title} ${category}`;
+  if (hasCategoryTerm(category, englishSpeakingCategoryTerms)) return 0;
+  if (/\benglish\b|\busa\b|\bus\b|\bamerican\b/.test(normalizeSearch(category))) return 0;
+  if (hasCategoryTerm(category, internationalCategoryTerms)) return 3;
+  if (hasCategoryTerm(haystack, internationalCategoryTerms)) return 3;
+  if (isLikelyEnglishTitle(title)) return 1;
+  if (hasNonLatinScript(title)) return 3;
+  return 2;
+}
+
+function isLikelyEnglishTitle(title) {
+  const trimmed = String(title || "").trim();
+  if (!trimmed) return false;
+  const ascii = trimmed.replace(/[^a-zA-Z0-9\s:,'\-!?.&]/g, "");
+  return ascii.length / trimmed.length >= 0.85;
+}
+
+function hasNonLatinScript(title) {
+  return /[\u0600-\u06FF\u0400-\u04FF\u4E00-\u9FFF\u0590-\u05FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u30FF\uAC00-\uD7AF]/.test(String(title || ""));
+}
+
+function compareMoviesForDisplay(a, b, options = {}) {
+  const englishCompare = englishMovieRank(a) - englishMovieRank(b);
+  if (englishCompare !== 0) return englishCompare;
+  const titleCompare = normalizeMovieTitle(a.title).localeCompare(normalizeMovieTitle(b.title));
+  if (titleCompare !== 0) return options.titleAsc === false ? -titleCompare : titleCompare;
+  return containerRank(a) - containerRank(b);
+}
+
 function sortMoviesForPlayback(movies) {
-  return [...movies].sort((a, b) => {
-    const titleCompare = normalizeMovieTitle(a.title).localeCompare(normalizeMovieTitle(b.title));
-    if (titleCompare !== 0) return titleCompare;
-    return containerRank(a) - containerRank(b);
-  });
+  return [...movies].sort((a, b) => compareMoviesForDisplay(a, b));
 }
 
 function normalizeMovieTitle(title) {
@@ -801,7 +1291,8 @@ function showHome() {
   $("settingsProvider").textContent = localStorage.getItem("streamlineProviderName") || "Demo Provider";
   updateCacheInfo();
   setView("live");
-  if (!state.usingProviderData || providerSessionReady) playSelectedChannel(false);
+  if (state.usingProviderData) startProviderSessionWarm();
+  if (!state.usingProviderData || providerSessionReady) autoPlayLiveOnStartup();
   document.querySelector(".nav-item.active").focus();
 }
 
@@ -820,9 +1311,19 @@ function bindNavigation() {
       handleAppBack();
       return;
     }
-    if (event.key === "Enter") {
+    if (isPlayerActionKey(event)) {
       if (Date.now() < suppressEnterUntil) {
         event.preventDefault();
+        return;
+      }
+      if (isFullscreenPlayerOpen()) {
+        event.preventDefault();
+        handleFullscreenPlayerEnter(event);
+        return;
+      }
+      if (shouldOfferPlayerMenu()) {
+        event.preventDefault();
+        handlePlaybackMenuKey(event);
         return;
       }
       if (document.activeElement?.classList.contains("poster-card")) {
@@ -837,11 +1338,19 @@ function bindNavigation() {
 function handleAppBack() {
   if (!$("homeScreen") || $("homeScreen").classList.contains("hidden")) return false;
   const playerOpen = document.body.classList.contains("tv-player-open");
+  const menuFocused = $("playerControls")?.contains(document.activeElement);
+  const menuUserOpen = controlsVisible || menuFocused;
   const hasReturnView = state.returnView && state.returnView !== "live";
+  if (playerOpen && menuUserOpen) {
+    if (isSeekControlFocused()) {
+      leaveSeekBarFocus("playerPlayPause");
+      return false;
+    }
+    closePlayerMenu();
+    return false;
+  }
   if (playerOpen || hasReturnView) {
-    if (playerOpen || isVodPlaybackActive()) stopVideoPlayback();
-    exitPlayerFullscreen();
-    restoreViewAfterPlayer();
+    exitFullscreenToBrowse();
     return false;
   }
   if (state.view === "series") {
@@ -875,22 +1384,319 @@ function handleAppBack() {
   return true;
 }
 
-function handlePlayerKeys(event) {
-  const playerOpen = document.body.classList.contains("tv-player-open") || document.fullscreenElement || document.webkitFullscreenElement;
-  const watching = state.currentMedia?.type === "Channel" || playerOpen;
-  if (!watching) return false;
-  const playerFocused = $("videoFrame").contains(document.activeElement) || $("playerControls").contains(document.activeElement);
-  if (isTvApp() && !playerFocused) return false;
-  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-    if (!playerOpen || state.currentMedia?.type !== "Channel") return false;
-    event.preventDefault();
-    surfChannel(event.key === "ArrowUp" ? -1 : 1);
+function isInPlayerSurface() {
+  const active = document.activeElement;
+  const inVideoFrame = active?.id === "videoFrame" || $("videoFrame")?.contains(active);
+  const inControls = controlsVisible && $("playerControls")?.contains(active);
+  return !!(inControls || inVideoFrame);
+}
+
+function canOpenPlayerMenu() {
+  if (!$("homeScreen") || $("homeScreen").classList.contains("hidden")) return false;
+  if (document.body.classList.contains("tv-player-open") || document.fullscreenElement || document.webkitFullscreenElement) return true;
+  if (isVodPlaybackActive()) return true;
+  if (nativePlayerActive && state.currentMedia) return true;
+  const player = $("videoPlayer");
+  if (player?.src && !player.paused && player.readyState >= 2) return true;
+  return false;
+}
+
+function shouldOfferPlayerMenu(active = document.activeElement) {
+  if (!canOpenPlayerMenu()) return false;
+  if (isFullscreenPlayerOpen()) return true;
+  if ($("playerControls")?.contains(active)) return true;
+  if (active?.id === "videoFrame" || $("videoFrame")?.contains(active)) return true;
+  return false;
+}
+
+function isFullscreenPlayerOpen() {
+  return document.body.classList.contains("tv-player-open") || !!document.fullscreenElement || !!document.webkitFullscreenElement;
+}
+
+function handleFullscreenPlayerEnter(event = {}) {
+  if (event.key === "MediaPlayPause") {
+    togglePlayerPlayback();
     return true;
   }
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    showPlayerControls(true);
+  if ($("playerControls")?.contains(document.activeElement)) return handlePlaybackMenuKey(event);
+  return openPlayerMenu();
+}
+
+function openPlayerMenu(options = {}) {
+  if (!canOpenPlayerMenu()) return false;
+  clearTimeout(channelPreviewTimer);
+  const playerOpen = document.body.classList.contains("tv-player-open");
+  pauseForPlayerMenu();
+  if (isTvApp() && !playerOpen) {
+    openPlayerFullscreen(true);
     return true;
+  }
+  showPlayerControls(true, { focusId: options.focusId || "playerPlayPause" });
+  return true;
+}
+
+function pauseForPlayerMenu() {
+  if (hasNativePlayer() && nativePlayerActive) {
+    nativeMenuPauseRequested = true;
+    nativePlayerPlaying = false;
+    try {
+      hideNativePlayerForMenu();
+      window.StreamlineNativePlayer?.pause?.();
+    } catch (_error) {}
+    requestAnimationFrame(() => {
+      if (nativeMenuPauseRequested) hideNativePlayerForMenu();
+      syncNativePlayingState();
+    });
+    return;
+  }
+  const player = $("videoPlayer");
+  if (player && !player.paused) {
+    try {
+      player.pause();
+    } catch (_error) {}
+  }
+}
+
+let playerControlsAnchor = null;
+
+function mountPlayerControlsForTv(show) {
+  const controls = $("playerControls");
+  const panel = document.querySelector(".player-panel");
+  if (!controls || !isTvApp()) return;
+  if (show) {
+    if (controls.parentElement !== document.body) {
+      playerControlsAnchor = panel?.querySelector(".now-card") || null;
+      document.body.appendChild(controls);
+    }
+    controls.classList.add("tv-player-menu");
+    document.body.classList.add("tv-player-menu-open");
+    return;
+  }
+  controls.classList.remove("tv-player-menu");
+  document.body.classList.remove("tv-player-menu-open");
+  if (controls.parentElement === document.body && panel) {
+    if (playerControlsAnchor) panel.insertBefore(controls, playerControlsAnchor);
+    else panel.insertBefore(controls, panel.querySelector(".now-card"));
+  }
+}
+
+function hideNativePlayerForMenu() {
+  if (!isTvApp() || !hasNativePlayer() || !nativePlayerActive) return;
+  try {
+    if (typeof window.StreamlineNativePlayer?.setControlsOverlayMode === "function") {
+      window.StreamlineNativePlayer.setControlsOverlayMode(1);
+      return;
+    }
+    window.StreamlineNativePlayer?.repositionLayout?.(0, 0, 0, 0, 0);
+  } catch (_error) {}
+}
+
+function showNativePlayerAfterMenu() {
+  if (!isTvApp() || !hasNativePlayer() || !nativePlayerActive) return;
+  try {
+    if (typeof window.StreamlineNativePlayer?.setControlsOverlayMode === "function") {
+      window.StreamlineNativePlayer.setControlsOverlayMode(0);
+    }
+    const fullscreen = document.body.classList.contains("tv-player-open");
+    repositionNativePlayer(fullscreen);
+    requestAnimationFrame(() => {
+      if (!nativeMenuOverlayActive() && !nativeMenuPauseRequested) {
+        repositionNativePlayer(fullscreen);
+      }
+    });
+  } catch (_error) {}
+}
+
+function resumeNativePlayback() {
+  nativeMenuPauseRequested = false;
+  nativePlayerPlaying = true;
+  const restartPending = nativeVodRestartTargetMs != null && Date.now() - nativeVodRestartAt < 30000;
+  if (isVodPlaybackActive() && !restartPending && (pendingNativeSeekMs != null || seekBarWasEdited())) {
+    markPendingSeekFromBar();
+  }
+  const targetMs = restartPending ? null : pendingNativeSeekMs;
+  showNativePlayerAfterMenu();
+  clearPreviewFramePoster();
+  if (targetMs != null && isVodPlaybackActive()) {
+    applyPendingNativeSeek(targetMs);
+  } else {
+    try {
+      window.StreamlineNativePlayer?.resume?.();
+    } catch (_error) {}
+  }
+  seekBarEditing = false;
+  showPlayerControls(false);
+  requestAnimationFrame(() => syncNativePlayingState());
+}
+
+function pauseNativeForMenu() {
+  nativeMenuPauseRequested = true;
+  nativePlayerPlaying = false;
+  setPausedPoster();
+  hideNativePlayerForMenu();
+  try {
+    window.StreamlineNativePlayer?.pause?.();
+  } catch (_error) {}
+  showPlayerControls(true, { focusId: "playerPlayPause" });
+}
+
+function syncNativeMenuOverlay(show) {
+  if (!isTvApp() || !hasNativePlayer() || !nativePlayerActive) return;
+  if (show) {
+    setPausedPoster();
+    hideNativePlayerForMenu();
+    requestAnimationFrame(() => {
+      if (nativeMenuOverlayActive()) hideNativePlayerForMenu();
+    });
+    return;
+  }
+  if (nativeMenuPauseRequested) {
+    setPausedPoster();
+    hideNativePlayerForMenu();
+    return;
+  }
+  showNativePlayerAfterMenu();
+  clearPreviewFramePoster();
+}
+
+function setPausedPoster() {
+  const media = state.currentMedia;
+  let image = media?.image;
+  if (!image && media?.id) {
+    image = data.channels.find((item) => item.id === media.id)?.image
+      || data.movies.find((item) => item.id === media.id)?.image
+      || data.series.find((item) => item.id === media.id)?.image;
+  }
+  if (!image) image = selectedChannel()?.image;
+  if (image) setPreviewFramePoster({ image });
+}
+
+function closePlayerMenu() {
+  controlsVisible = false;
+  showPlayerControls(false, { force: true });
+  const playerOpen = document.body.classList.contains("tv-player-open");
+  if (playerOpen) {
+    $("videoFrame")?.focus({ preventScroll: true });
+  }
+}
+
+function exitFullscreenToBrowse() {
+  if (isVodPlaybackActive()) stopVideoPlayback();
+  exitPlayerFullscreen();
+  restoreViewAfterPlayer();
+  focusLiveBrowse();
+}
+
+function focusLiveBrowse() {
+  if (state.view !== "live") return;
+  const row = $("channelList")?.querySelector(`[data-channel-id="${cssEscape(state.selectedChannelId)}"]`);
+  if (row) {
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: "nearest", inline: "nearest" });
+    return;
+  }
+  focusActiveLiveRow("channelList", "channelId", state.selectedChannelId);
+}
+
+function isPlayerActionKey(event) {
+  const key = event.key || "";
+  if (key === "Enter" || key === " " || key === "Select" || key === "MediaPlayPause") return true;
+  const code = event.keyCode || event.which || 0;
+  return code === 13 || code === 23 || code === 66 || code === 160;
+}
+
+function handlePlaybackMenuKey(event = {}) {
+  const active = document.activeElement;
+  if ($("playerControls")?.contains(active)) {
+    if (isSeekControlFocused()) {
+      if (isVodPlaybackActive()) {
+        scrubPlayer();
+        leaveSeekBarFocus("playerPlayPause");
+      } else {
+        toast("Live channels use RW and FF instead of the timeline.");
+        leaveSeekBarFocus("playerPlayPause");
+      }
+      return true;
+    }
+    if (active?.tagName === "BUTTON" && !active.disabled) {
+      active.click();
+      return true;
+    }
+  }
+  if (event.key === "MediaPlayPause") {
+    togglePlayerPlayback();
+    return true;
+  }
+  if (controlsVisible) return true;
+  return openPlayerMenu();
+}
+
+function handleDeviceSelect() {
+  if ($("homeScreen")?.classList.contains("hidden")) return false;
+  if (isTypingField(document.activeElement)) return false;
+  if (controlsVisible) return handlePlaybackMenuKey({ key: "Enter" });
+  if (!canOpenPlayerMenu()) return false;
+  return handlePlaybackMenuKey({ key: "Enter" });
+}
+
+function handlePlayerKeys(event) {
+  const active = document.activeElement;
+  const inVideoFrame = active?.id === "videoFrame" || $("videoFrame")?.contains(active);
+  const inControls = controlsVisible && $("playerControls")?.contains(active);
+  if (!inVideoFrame && !inControls) return false;
+  const playerOpen = document.body.classList.contains("tv-player-open") || document.fullscreenElement || document.webkitFullscreenElement;
+
+  if (inControls) {
+    const controlButtons = [...($("playerControls")?.querySelectorAll(".control-row .focusable:not([disabled])") || [])]
+      .filter((item) => !item.classList.contains("hidden"));
+    if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && isSeekControlFocused()) {
+      if (!$("seekBar").disabled) {
+        event.preventDefault();
+        adjustSeekBarStep(event.key === "ArrowRight" ? 1 : -1);
+        updateSeekBarHint();
+      }
+      return true;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      const idx = controlButtons.indexOf(document.activeElement);
+      if (idx !== -1) {
+        const dir = event.key === "ArrowRight" ? 1 : -1;
+        controlButtons[(idx + dir + controlButtons.length) % controlButtons.length]?.focus();
+      }
+      return true;
+    }
+    if (event.key === "ArrowDown" && !isSeekControlFocused()) {
+      event.preventDefault();
+      if (isTvApp() && isVodPlaybackActive()) focusSeekBar();
+      else if (!$("seekBar")?.disabled) focusSeekBar();
+      return true;
+    }
+    if (event.key === "ArrowUp" && isSeekControlFocused()) {
+      event.preventDefault();
+      leaveSeekBarFocus("playerPlayPause");
+      return true;
+    }
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+      event.preventDefault();
+      return true;
+    }
+  }
+  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && inVideoFrame && !inControls) {
+    if (isVodPlaybackActive() || (playerOpen && state.currentMedia?.type !== "Channel")) {
+      event.preventDefault();
+      return true;
+    }
+    if (state.view === "live" && state.currentMedia?.type === "Channel") {
+      event.preventDefault();
+      changeChannel(event.key === "ArrowDown" ? 1 : -1, { preview: !playerOpen });
+      return true;
+    }
+    return false;
+  }
+  if (isPlayerActionKey(event) && (inVideoFrame || inControls)) {
+    event.preventDefault();
+    return handlePlaybackMenuKey(event);
   }
   return false;
 }
@@ -1206,6 +2012,7 @@ function focusablesIn(container) {
 function handleLiveDirectionalFocus(event) {
   if (state.view !== "live") return false;
   const current = document.activeElement;
+  if ($("playerControls")?.contains(current)) return false;
   const inCategories = $("liveCategories").contains(current);
   const inChannels = $("channelList").contains(current);
   const inVideoFrame = $("videoFrame").contains(current);
@@ -1228,6 +2035,14 @@ function handleLiveDirectionalFocus(event) {
   if (inVideoFrame && event.key === "ArrowRight") {
     event.preventDefault();
     $("favoriteButton").focus();
+    return true;
+  }
+  if (inVideoFrame && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    if (isVodPlaybackActive() || (document.body.classList.contains("tv-player-open") && state.currentMedia?.type !== "Channel")) {
+      return false;
+    }
+    event.preventDefault();
+    changeChannel(event.key === "ArrowDown" ? 1 : -1, { preview: !document.body.classList.contains("tv-player-open") });
     return true;
   }
   if (favoriteFocused && event.key === "ArrowLeft") {
@@ -1384,10 +2199,26 @@ function bindActions() {
   $("rewindButton").addEventListener("click", () => seekPlayer(-15));
   $("playerPlayPause").addEventListener("click", togglePlayerPlayback);
   $("forwardButton").addEventListener("click", () => seekPlayer(30));
-  $("seekBar").addEventListener("input", scrubPlayer);
+  const seekBar = $("seekBar");
+  if (isTvApp()) {
+    $("seekBarFocus")?.addEventListener("focus", () => {
+      seekBarEditing = true;
+      updateSeekBarHint();
+    });
+    $("seekBarFocus")?.addEventListener("blur", () => {
+      seekBarEditing = false;
+      updateSeekBar();
+    });
+  } else {
+    seekBar.addEventListener("input", scrubPlayer);
+    seekBar.addEventListener("change", scrubPlayer);
+  }
   $("ccButton").addEventListener("click", toggleCaptions);
   $("wideButton").addEventListener("click", toggleWideMode);
-  $("exitFullscreenButton").addEventListener("click", exitPlayerFullscreen);
+  $("exitFullscreenButton").addEventListener("click", () => {
+    if (isTvApp()) exitFullscreenToBrowse();
+    else exitPlayerFullscreen();
+  });
   document.addEventListener("fullscreenchange", syncFullscreenButton);
   document.addEventListener("webkitfullscreenchange", syncFullscreenButton);
   $("sortMovies").addEventListener("click", () => {
@@ -1407,6 +2238,7 @@ function bindActions() {
     localStorage.removeItem("streamlineProviderCache");
     localStorage.removeItem("streamlineProviderCacheMeta");
     localStorage.removeItem("streamlineRememberedProviderPayload");
+    clearAppSavedLogin();
     clearProviderCacheRecord().catch(() => {});
     state.favorites = new Set();
     renderAll();
@@ -1417,9 +2249,7 @@ function bindActions() {
 
 async function toggleFullscreen() {
   if (isTvApp() && document.body.classList.contains("tv-player-open")) {
-    if (isVodPlaybackActive()) stopVideoPlayback();
-    await exitPlayerFullscreen();
-    restoreViewAfterPlayer();
+    exitFullscreenToBrowse();
     return;
   }
   if (state.view !== "live") setView("live");
@@ -1428,9 +2258,18 @@ async function toggleFullscreen() {
 
 async function openPlayerFullscreen(showControls = false, forceVideo = false) {
   if (isTvApp()) {
-    if (state.view !== "live") setView("live");
+    if (!isVodPlaybackActive() && state.view !== "live") setView("live");
+    clearTimeout(channelPreviewTimer);
     document.body.classList.add("tv-player-open");
+    document.body.classList.remove("tv-controls-open");
+    if (showControls) pauseForPlayerMenu();
     showPlayerControls(showControls);
+    if (nativePlayerActive && !showControls && !nativeMenuOverlayActive()) {
+      repositionNativePlayer(true);
+      requestAnimationFrame(() => {
+        if (!nativeMenuOverlayActive()) repositionNativePlayer(true);
+      });
+    }
     syncFullscreenButton();
     $("videoFrame").focus?.();
     return;
@@ -1465,8 +2304,15 @@ async function openPlayerFullscreen(showControls = false, forceVideo = false) {
 
 async function exitPlayerFullscreen() {
   if (isTvApp()) {
+    syncNativeMenuOverlay(false);
     document.body.classList.remove("tv-player-open");
-    showPlayerControls(false);
+    document.body.classList.remove("tv-controls-open");
+    controlsVisible = false;
+    if (nativePlayerActive) {
+      repositionNativePlayer(false);
+      requestAnimationFrame(() => repositionNativePlayer(false));
+    }
+    showPlayerControls(false, { force: true });
     syncFullscreenButton();
     return;
   }
@@ -1488,10 +2334,19 @@ function syncFullscreenButton() {
   if (!fullscreenElement) showPlayerControls(false);
 }
 
-function showPlayerControls(show) {
+function showPlayerControls(show, options = {}) {
   clearTimeout(state.controlsTimer);
-  $("playerControls").classList.toggle("hidden", !show);
-  $("videoFrame").classList.toggle("controls-open", show);
+  const wasVisible = controlsVisible;
+  const playerOpen = document.body.classList.contains("tv-player-open");
+  const visible = options.force ? false : !!show;
+  controlsVisible = visible;
+  syncNativePlayingState();
+  syncNativeMenuOverlay(visible);
+  const paused = (hasNativePlayer() && nativePlayerActive) ? !nativePlayerPlaying : $("videoPlayer").paused;
+  document.body.classList.toggle("tv-controls-open", visible && isTvApp());
+  $("playerControls").classList.toggle("hidden", !visible);
+  $("videoFrame").classList.toggle("controls-open", visible);
+  mountPlayerControlsForTv(visible);
   $("controlMediaTitle").textContent = state.currentMedia?.title || $("nowTitle").textContent || "Paused";
   if (hasNativePlayer() && nativePlayerActive) {
     $("playerPlayPause").textContent = nativePlayerPlaying ? "Pause" : "Play";
@@ -1499,48 +2354,393 @@ function showPlayerControls(show) {
     $("playerPlayPause").textContent = $("videoPlayer").paused ? "Play" : "Pause";
   }
   updatePlayerOptionStates();
-  if (show) {
+  if (visible) {
+    syncTvSeekUi();
     updateSeekBar();
     clearInterval(state.seekTimer);
     state.seekTimer = setInterval(updateSeekBar, 1000);
-    $("playerPlayPause").focus();
-    state.controlsTimer = setTimeout(() => showPlayerControls(false), 4500);
+    const focusId = options.focusId || (show && !wasVisible ? "playerPlayPause" : null);
+    if (focusId && $(focusId)) {
+      requestAnimationFrame(() => $(focusId).focus());
+    }
+    if (show && !paused) {
+      state.controlsTimer = setTimeout(() => {
+        if (!$("playerControls")?.contains(document.activeElement)) showPlayerControls(false);
+      }, playerOpen ? 8000 : 4500);
+    }
   } else {
     clearInterval(state.seekTimer);
   }
+}
+
+function togglePlayerPlayback() {
+  if (isVodPlaybackActive()) {
+    if (hasNativePlayer() && nativePlayerActive) {
+      try {
+        if (nativeMenuPauseRequested) resumeNativePlayback();
+        else pauseNativeForMenu();
+      } catch (_error) {}
+      return;
+    }
+    const player = $("videoPlayer");
+    if (player.paused) {
+      player.play().then(() => showPlayerControls(false)).catch(() => toast("Playback is blocked by this browser."));
+    } else {
+      player.pause();
+      showPlayerControls(true, { focusId: "playerPlayPause" });
+    }
+    return;
+  }
+  if (hasNativePlayer() && nativePlayerActive && state.currentMedia?.type === "Channel") {
+    try {
+      if (nativeMenuPauseRequested) resumeNativePlayback();
+      else pauseNativeForMenu();
+    } catch (_error) {}
+    return;
+  }
+  if (state.currentMedia?.type === "Channel") {
+    const player = $("videoPlayer");
+    if (player.paused) {
+      player.play().then(() => showPlayerControls(false)).catch(() => toast("Playback is blocked by this browser."));
+    } else {
+      player.pause();
+      showPlayerControls(true, { focusId: "playerPlayPause" });
+    }
+  }
+}
+
+function updateFavoriteUiForChannel(channelId) {
+  const ch = data.channels.find((item) => item.id === channelId);
+  if (!ch) return;
+  $("favoriteButton").textContent = isFavorite(channelId) ? "Unfavorite" : "Favorite";
+  const row = $("channelList")?.querySelector(`[data-channel-id="${cssEscape(channelId)}"]`);
+  if (row) {
+    row.innerHTML = `<span class="row-title">${isFavorite(channelId) ? "Star " : ""}${ch.name}</span><span class="row-sub">${ch.program}</span>`;
+    row.classList.toggle("active", channelId === state.selectedChannelId);
+  }
+  if (state.view === "favorites") renderFavorites();
 }
 
 function updatePlayerOptionStates() {
   const player = $("videoPlayer");
-  const seekable = player.seekable?.length ? player.seekable.end(player.seekable.length - 1) - player.seekable.start(0) > 60 : false;
-  $("rewindButton").disabled = !seekable;
-  $("forwardButton").disabled = !seekable;
-  $("seekBar").disabled = !seekable;
-  $("ccButton").classList.toggle("disabled", !hasCaptionTracks());
-  $("ccButton").textContent = hasCaptionTracks() ? (state.captionsOn ? "CC On" : "CC Off") : "No CC";
+  const liveChannel = state.currentMedia?.type === "Channel" && !isVodPlaybackActive();
+  const liveNative = liveChannel && nativePlayerActive && hasNativePlayer();
+  const nativeVod = isVodPlaybackActive() && nativePlayerActive;
+  const liveMenu = liveChannel && isTvApp() && nativeMenuOverlayActive();
+  const vodMenu = nativeVod && isTvApp() && nativeMenuOverlayActive();
+  const tvNativeMenu = isTvApp() && nativeMenuOverlayActive() && nativePlayerActive && hasNativePlayer();
+  let rwFfEnabled = false;
+  let scrubEnabled = false;
+  if (liveNative) {
+    rwFfEnabled = true;
+    scrubEnabled = getNativeDurationMs() > 0;
+  } else if (liveChannel) {
+    rwFfEnabled = false;
+  } else if (nativeVod) {
+    scrubEnabled = getNativeDurationMs() > 0 || lastNativeDurationMs > 0;
+    rwFfEnabled = true;
+  } else {
+    scrubEnabled = player.seekable?.length
+      ? player.seekable.end(player.seekable.length - 1) - player.seekable.start(0) > 60
+      : false;
+    rwFfEnabled = scrubEnabled;
+  }
+  if (tvNativeMenu) {
+    rwFfEnabled = true;
+    scrubEnabled = isVodPlaybackActive();
+  }
+  $("rewindButton").disabled = tvNativeMenu ? false : !rwFfEnabled;
+  $("forwardButton").disabled = tvNativeMenu ? false : !rwFfEnabled;
+  $("seekBar").disabled = tvNativeMenu ? !isVodPlaybackActive() : !scrubEnabled;
+  $("rewindButton").classList.toggle("live-muted", liveMenu && !rwFfEnabled && !tvNativeMenu);
+  $("forwardButton").classList.toggle("live-muted", liveMenu && !rwFfEnabled && !tvNativeMenu);
+  $("seekBar").classList.toggle("live-muted", (liveMenu || vodMenu) && !scrubEnabled && !tvNativeMenu);
+  const nativeCaptions = hasNativePlayer() && nativePlayerActive;
+  const ccAvailable = nativeCaptions || hasCaptionTracks();
+  $("ccButton").disabled = !ccAvailable;
+  $("ccButton").classList.toggle("disabled", !ccAvailable);
+  $("ccButton").textContent = ccAvailable ? (state.captionsOn ? "CC On" : "CC Off") : "No CC";
+  $("wideButton").classList.toggle("hidden", nativePlayerActive || isVodPlaybackActive());
+  $("playerControls")?.classList.toggle("live-player-menu", liveMenu);
+  $("playerControls")?.classList.toggle("vod-player-menu", vodMenu);
+  syncTvSeekUi();
 }
 
-function togglePlayerPlayback() {
-  if (hasNativePlayer() && nativePlayerActive) {
+function nativePlayerSeekable() {
+  if (!hasNativePlayer() || !nativePlayerActive) return false;
+  try {
+    if (typeof window.StreamlineNativePlayer?.isSeekable === "function") {
+      return window.StreamlineNativePlayer.isSeekable();
+    }
+    const durationMs = window.StreamlineNativePlayer?.getDuration?.() || 0;
+    return durationMs > 60000;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function getNativeDurationMs() {
+  try {
+    let ms = Number(window.StreamlineNativePlayer?.getDuration?.() || 0);
+    if (!Number.isFinite(ms) || ms <= 0 || ms > 86400000 * 6) ms = 0;
+    if (ms > 0) {
+      lastNativeDurationMs = ms;
+      return ms;
+    }
+  } catch (_error) {}
+  return lastNativeDurationMs;
+}
+
+function getNativeDurationSec() {
+  const ms = getNativeDurationMs();
+  return ms > 0 ? ms / 1000 : 0;
+}
+
+function focusSeekBar() {
+  if (isTvApp()) {
+    const wrap = $("seekBarFocus");
+    if (!wrap || wrap.classList.contains("hidden") || $("seekBar")?.disabled) return false;
+    seekBarEditing = false;
+    updateSeekBar();
     try {
-      if (nativePlayerPlaying) {
-        window.StreamlineNativePlayer.pause();
-        nativePlayerPlaying = false;
-      } else {
-        window.StreamlineNativePlayer.resume();
-        nativePlayerPlaying = true;
-      }
+      seekBarAnchorPositionMs = window.StreamlineNativePlayer?.getCurrentPosition?.() || seekBarAnchorPositionMs;
     } catch (_error) {}
-    showPlayerControls(true);
+    syncSeekBarAnchor();
+    seekBarEditing = true;
+    updateSeekBarHint();
+    wrap.focus({ preventScroll: true });
+    return true;
+  }
+  const bar = $("seekBar");
+  if (!bar || bar.disabled) return false;
+  seekBarEditing = true;
+  bar.focus({ preventScroll: true });
+  return true;
+}
+
+function leaveSeekBarFocus(targetId = "playerPlayPause") {
+  if (isVodPlaybackActive() && seekBarWasEdited()) markPendingSeekFromBar();
+  seekBarEditing = false;
+  const target = $(targetId);
+  if (target && !target.disabled) {
+    target.focus({ preventScroll: true });
+    return true;
+  }
+  $("rewindButton")?.focus({ preventScroll: true });
+  return false;
+}
+
+function syncSeekBarAnchor() {
+  seekBarAnchorValue = Number($("seekBar")?.value || 0);
+  try {
+    seekBarAnchorPositionMs = window.StreamlineNativePlayer?.getCurrentPosition?.() || 0;
+  } catch (_error) {
+    seekBarAnchorPositionMs = 0;
+  }
+}
+
+function seekBarWasEdited() {
+  return Math.abs(Number($("seekBar")?.value || 0) - seekBarAnchorValue) >= 8;
+}
+
+function computeTargetMsFromBar() {
+  const barValue = Number($("seekBar")?.value || 0);
+  let durationMs = getNativeDurationMs();
+  if (durationMs <= 0) durationMs = lastNativeDurationMs;
+  const deltaUnits = barValue - seekBarAnchorValue;
+  if (durationMs > 0 && seekBarAnchorPositionMs > 0) {
+    return Math.max(0, Math.round(seekBarAnchorPositionMs + ((deltaUnits / 1000) * durationMs)));
+  }
+  if (nativeVodRestartTargetMs != null && Date.now() - nativeVodRestartAt < 30000) {
+    return nativeVodRestartTargetMs;
+  }
+  const percent = Math.max(0, Math.min(1, barValue / 1000));
+  if (durationMs <= 0) durationMs = Math.max(seekBarAnchorPositionMs + 120000, 5400000);
+  return Math.round(durationMs * percent);
+}
+
+function nativeVodUsesTranscodePipe() {
+  if (!isVodPlaybackActive() || !nativePlayerActive) return false;
+  if (isTvApp()) return true;
+  const url = state.currentMedia?.streamUrl || "";
+  const source = `${state.currentMedia?.container || ""} ${url}`.toLowerCase();
+  return source.includes(".mkv") || source.includes("mkv");
+}
+
+function restartNativeVodAt(positionMs, options = {}) {
+  const media = state.currentMedia;
+  if (!media || !hasNativePlayer() || !nativeVodUsesTranscodePipe()) return false;
+  const targetMs = Math.max(0, Math.round(positionMs));
+  let currentMs = seekBarAnchorPositionMs;
+  try {
+    currentMs = window.StreamlineNativePlayer?.getCurrentPosition?.() || currentMs;
+  } catch (_error) {}
+  if (nativeVodRestartTargetMs != null && Math.abs(targetMs - nativeVodRestartTargetMs) < nativeVodNearTargetMs) {
+    return true;
+  }
+  if (Math.abs(targetMs - currentMs) < nativeVodNearTargetMs) {
+    syncSeekBarAnchor();
+    return true;
+  }
+  const startSeconds = Math.max(0, Math.round(targetMs / 1000));
+  const source = playableMediaSource(media, {
+    forceTranscode: !!media.forceTranscode,
+    startSeconds
+  });
+  if (!source.includes("transcode-movie") || !source.includes(`start=${startSeconds}`)) return false;
+  const stayPaused = !!options.stayPaused;
+  if (stayPaused) nativeMenuPauseRequested = true;
+  pendingNativeSeekMs = null;
+  nativeVodRestartTargetMs = targetMs;
+  nativeVodRestartAt = Date.now();
+  logTvDebug("native-vod-restart-at", { startSeconds, stayPaused, targetMs });
+  try {
+    window.StreamlineNativePlayer?.setControlsOverlayMode?.(0);
+    callNativePlayWithLayout(source, true);
+    nativePlayerActive = true;
+    nativePlayerPlaying = !stayPaused && !nativeMenuPauseRequested;
+    if (stayPaused || nativeMenuPauseRequested) {
+      hideNativePlayerForMenu();
+      window.StreamlineNativePlayer?.pause?.();
+    } else {
+      showNativePlayerAfterMenu();
+    }
+    beginNativeDurationPoll();
+  } catch (_error) {
+    nativeVodRestartTargetMs = null;
+    return false;
+  }
+  seekBarAnchorValue = Number($("seekBar")?.value || 0);
+  seekBarAnchorPositionMs = targetMs;
+  scheduleSeekBarRefresh();
+  return true;
+}
+
+function markPendingSeekFromBar() {
+  if (!isVodPlaybackActive()) return;
+  pendingNativeSeekMs = computeTargetMsFromBar();
+}
+
+function applyPendingNativeSeek(targetMs, options = {}) {
+  if (targetMs == null || targetMs < 0) return;
+  const target = Math.max(0, Math.round(targetMs));
+  let currentMs = seekBarAnchorPositionMs;
+  try {
+    currentMs = window.StreamlineNativePlayer?.getCurrentPosition?.() || currentMs;
+  } catch (_error) {}
+  const deltaMs = target - currentMs;
+  if (nativeVodRestartTargetMs != null && Math.abs(target - nativeVodRestartTargetMs) < nativeVodNearTargetMs) {
+    pendingNativeSeekMs = null;
+    syncSeekBarAnchor();
+    scheduleSeekBarRefresh();
     return;
   }
-  const player = $("videoPlayer");
-  if (player.paused) {
-    player.play().then(() => showPlayerControls(true)).catch(() => toast("Playback is blocked by this browser."));
-  } else {
-    player.pause();
-    showPlayerControls(true);
+  if (nativeVodUsesTranscodePipe() && Math.abs(deltaMs) >= nativeVodRestartThresholdMs) {
+    if (restartNativeVodAt(target, options)) return;
   }
+  const seek = () => {
+    try {
+      if (Math.abs(deltaMs) >= 500 && typeof window.StreamlineNativePlayer?.seekBySeconds === "function") {
+        window.StreamlineNativePlayer.seekBySeconds(Math.round(deltaMs / 1000));
+      } else {
+        window.StreamlineNativePlayer?.seekTo?.(target);
+      }
+      if (options.stayPaused) window.StreamlineNativePlayer?.pause?.();
+      else window.StreamlineNativePlayer?.resume?.();
+    } catch (_error) {}
+  };
+  seek();
+  if (options.stayPaused) {
+    pendingNativeSeekMs = null;
+    syncSeekBarAnchor();
+    scheduleSeekBarRefresh();
+    return;
+  }
+  setTimeout(seek, 150);
+  setTimeout(seek, 450);
+  setTimeout(() => {
+    seek();
+    pendingNativeSeekMs = null;
+    syncSeekBarAnchor();
+    scheduleSeekBarRefresh();
+  }, 900);
+}
+
+function scheduleSeekBarRefresh() {
+  clearTimeout(seekBarRefreshTimer);
+  seekBarRefreshTimer = setTimeout(updateSeekBar, 300);
+  setTimeout(updateSeekBar, 900);
+}
+
+function adjustSeekBarStep(direction) {
+  const bar = $("seekBar");
+  if (!bar || bar.disabled) return;
+  seekBarEditing = true;
+  const step = 25;
+  const next = Math.max(0, Math.min(1000, Number(bar.value) + (direction * step)));
+  bar.value = String(next);
+  markPendingSeekFromBar();
+  updateSeekBarHint();
+}
+
+function nativeSeekToPercent(percent) {
+  if (!hasNativePlayer() || !nativePlayerActive) return false;
+  const clamped = Math.max(0, Math.min(1, percent));
+  try {
+    const durationMs = getNativeDurationMs();
+    if (durationMs > 0 && typeof window.StreamlineNativePlayer?.seekTo === "function") {
+      window.StreamlineNativePlayer.seekTo(Math.round(durationMs * clamped));
+      return true;
+    }
+    const targetValue = Math.round(clamped * 1000);
+    const deltaUnits = targetValue - seekBarAnchorValue;
+    const refMs = durationMs > 0
+      ? durationMs
+      : Math.max(seekBarAnchorPositionMs + 60000, lastNativeDurationMs, 5400000);
+    const targetMs = durationMs > 0 ? durationMs * clamped : seekBarAnchorPositionMs + ((deltaUnits / 1000) * refMs);
+    if (typeof window.StreamlineNativePlayer?.seekTo === "function") {
+      window.StreamlineNativePlayer.seekTo(Math.max(0, Math.round(targetMs)));
+      return true;
+    }
+    if (typeof window.StreamlineNativePlayer?.seekBySeconds === "function") {
+      const currentMs = window.StreamlineNativePlayer.getCurrentPosition?.() || 0;
+      const deltaSec = Math.round((targetMs - currentMs) / 1000);
+      if (deltaSec !== 0) {
+        window.StreamlineNativePlayer.seekBySeconds(deltaSec);
+        return true;
+      }
+    }
+  } catch (_error) {}
+  return false;
+}
+
+function getNativeCurrentTimeSec() {
+  try {
+    return (window.StreamlineNativePlayer?.getCurrentPosition?.() || 0) / 1000;
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function nativeSeekToSeconds(seconds) {
+  if (!hasNativePlayer() || !nativePlayerActive) return false;
+  try {
+    if (isVodPlaybackActive() && nativeVodUsesTranscodePipe()) {
+      const currentMs = window.StreamlineNativePlayer?.getCurrentPosition?.() || seekBarAnchorPositionMs || 0;
+      const targetMs = Math.max(0, currentMs + Math.round(seconds * 1000));
+      if (restartNativeVodAt(targetMs)) return true;
+    }
+    if (typeof window.StreamlineNativePlayer?.seekBySeconds === "function") {
+      window.StreamlineNativePlayer.seekBySeconds(Math.round(seconds));
+      return true;
+    }
+    if (typeof window.StreamlineNativePlayer?.seekTo === "function") {
+      const currentMs = window.StreamlineNativePlayer.getCurrentPosition?.() || 0;
+      window.StreamlineNativePlayer.seekTo(Math.max(0, currentMs + Math.round(seconds * 1000)));
+      return true;
+    }
+  } catch (_error) {}
+  return false;
 }
 
 function enableHardwareVolume() {
@@ -1550,6 +2750,26 @@ function enableHardwareVolume() {
 }
 
 function seekPlayer(seconds) {
+  if (nativePlayerActive && state.currentMedia?.type === "Channel" && !isVodPlaybackActive()) {
+    try {
+      if (typeof window.StreamlineNativePlayer?.seekBySeconds === "function") {
+        window.StreamlineNativePlayer.seekBySeconds(Math.round(seconds));
+        scheduleSeekBarRefresh();
+        return;
+      }
+    } catch (_error) {}
+    toast("This live channel cannot rewind or fast-forward.");
+    return;
+  }
+  if (isVodPlaybackActive() && nativePlayerActive) {
+    if (!nativeSeekToSeconds(seconds)) {
+      toast("Rewind and fast-forward are not available for this stream yet.");
+      return;
+    }
+    bumpSeekBarForNativeSeek(seconds);
+    scheduleSeekBarRefresh();
+    return;
+  }
   const player = $("videoPlayer");
   if (!player.seekable?.length) {
     toast("This live channel cannot rewind or fast-forward.");
@@ -1567,6 +2787,21 @@ function seekPlayer(seconds) {
 }
 
 function scrubPlayer() {
+  if (hasNativePlayer() && nativePlayerActive) {
+    if (!isVodPlaybackActive()) {
+      toast("Live channels use RW and FF instead of the timeline.");
+      return;
+    }
+    markPendingSeekFromBar();
+    if (pendingNativeSeekMs == null) {
+      toast("This title is still loading seek controls.");
+      return;
+    }
+    applyPendingNativeSeek(pendingNativeSeekMs, { stayPaused: true });
+    seekBarEditing = false;
+    scheduleSeekBarRefresh();
+    return;
+  }
   const player = $("videoPlayer");
   if (!player.seekable?.length) return;
   const start = player.seekable.start(0);
@@ -1577,6 +2812,16 @@ function scrubPlayer() {
 }
 
 function updateSeekBar() {
+  if (seekBarEditing || isSeekControlFocused()) return;
+  if (hasNativePlayer() && nativePlayerActive && (isVodPlaybackActive() || state.currentMedia?.type === "Channel")) {
+    const durationMs = getNativeDurationMs();
+    if (durationMs <= 0) return;
+    const current = getNativeCurrentTimeSec();
+    $("seekBar").value = Math.round((current / (durationMs / 1000)) * 1000);
+    syncSeekBarAnchor();
+    if (isTvApp() && nativeMenuOverlayActive()) updatePlayerOptionStates();
+    return;
+  }
   const player = $("videoPlayer");
   if (!player.seekable?.length) {
     $("seekBar").value = 0;
@@ -1593,6 +2838,16 @@ function updateSeekBar() {
 }
 
 function toggleCaptions() {
+  if (hasNativePlayer() && nativePlayerActive) {
+    state.captionsOn = !state.captionsOn;
+    try {
+      window.StreamlineNativePlayer?.setCaptionsEnabled?.(state.captionsOn);
+    } catch (_error) {}
+    $("ccButton").textContent = state.captionsOn ? "CC On" : "CC Off";
+    showPlayerControls(true, { focusId: "ccButton" });
+    toast(state.captionsOn ? "Captions on" : "Captions off");
+    return;
+  }
   if (!hasCaptionTracks()) {
     toast("No captions are available on this stream.");
     return;
@@ -1693,7 +2948,7 @@ function appendChannelRows(list, channels, start, size, token) {
     row.dataset.channelId = ch.id;
     row.className = "list-row focusable" + (ch.id === state.selectedChannelId ? " active" : "");
     row.innerHTML = `<span class="row-title">${isFavorite(ch.id) ? "Star " : ""}${ch.name}</span><span class="row-sub">${ch.program}</span>`;
-    row.addEventListener("focus", () => previewChannel(ch, { play: !isTvApp() }));
+    row.addEventListener("focus", () => previewChannel(ch, { play: true }));
     row.addEventListener("click", () => {
       clearTimeout(channelPreviewTimer);
       previewChannel(ch, { play: false });
@@ -1704,6 +2959,51 @@ function appendChannelRows(list, channels, start, size, token) {
   }
   list.appendChild(fragment);
   list.dataset.renderedEnd = String(end);
+}
+
+function liveCategoryForChannel(ch) {
+  if (!ch) return "All Channels";
+  if (ch.category && channelsForCategory(ch.category).some((item) => item.id === ch.id)) return ch.category;
+  const smart = smartCategoryRules.find((rule) => matchesSmartCategory(ch, rule));
+  if (smart && channelsForCategory(smart.name).some((item) => item.id === ch.id)) return smart.name;
+  return "All Channels";
+}
+
+function ensureChannelRowRendered(channelId) {
+  const list = $("channelList");
+  if (!list) return null;
+  const channels = list._channels || [];
+  const index = channels.findIndex((ch) => ch.id === channelId);
+  if (index < 0) return null;
+  const token = liveRenderToken;
+  let renderedEnd = Number(list.dataset.renderedEnd || 0);
+  while (renderedEnd <= index && renderedEnd < channels.length) {
+    appendChannelRows(list, channels, renderedEnd, Math.max(liveChunkSize, index - renderedEnd + 1), token);
+    renderedEnd = Number(list.dataset.renderedEnd || 0);
+  }
+  updateActiveRows("channelList", "channelId", channelId);
+  return list.querySelector(`[data-channel-id="${cssEscape(channelId)}"]`);
+}
+
+async function openLiveChannelFullscreen(ch) {
+  if (!ch) return;
+  clearTimeout(channelPreviewTimer);
+  previewPlaybackKey = "";
+  const cat = liveCategoryForChannel(ch);
+  state.category = cat;
+  state.selectedChannelId = ch.id;
+  setView("live");
+  $("sectionTitle").textContent = cat;
+  renderLive();
+  updateActiveRows("liveCategories", "category", cat);
+  renderSelectedChannel({ loadGuide: true });
+  ensureChannelRowRendered(ch.id);
+  await playChannel(ch, false, { preview: false });
+  await openPlayerFullscreen(false);
+  setTimeout(() => {
+    const row = $("channelList")?.querySelector(`[data-channel-id="${cssEscape(ch.id)}"]`);
+    row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, 80);
 }
 
 function selectLiveCategory(cat) {
@@ -1727,31 +3027,43 @@ function previewChannel(ch, options = {}) {
   if (!ch) return;
   state.selectedChannelId = ch.id;
   updateActiveRows("channelList", "channelId", ch.id);
-  renderSelectedChannel({ loadGuide: false });
-  if (options.play) scheduleChannelPreview(ch);
+  if (options.play) {
+    scheduleChannelPreview(ch);
+    clearTimeout(channelInfoTimer);
+    channelInfoTimer = setTimeout(() => {
+      if (state.selectedChannelId !== ch.id) return;
+      renderSelectedChannel({ loadGuide: false });
+    }, previewDelayMs);
+  } else {
+    renderSelectedChannel({ loadGuide: false });
+  }
 }
 
 function scheduleChannelPreview(ch) {
   clearTimeout(channelPreviewTimer);
   channelPreviewTimer = setTimeout(async () => {
     if (isVodPlaybackActive()) return;
+    if (nativeMenuOverlayActive() || nativeMenuPauseRequested) return;
     if (document.body.classList.contains("tv-player-open")) return;
     if (state.view === "movies" || state.view === "series") return;
-    if (state.view === "live" && state.selectedChannelId === ch.id) {
-      loadChannelGuide(ch);
-      try {
-        const ready = await ensureProviderSessionReady();
-        if (!ready) {
-          toast("Provider is still waking up.");
-          return;
-        }
-      } catch (_error) {
-        toast("Provider is still waking up.");
+    if (state.view !== "live" || state.selectedChannelId !== ch.id) return;
+    const player = $("videoPlayer");
+    const previewKey = `${ch.id}:preview:${playableChannelSource(ch)}`;
+    if (previewPlaybackKey === previewKey) {
+      if (shouldUseNativeLivePlayer() && nativePlayerActive) return;
+      if (
+        !shouldUseNativeLivePlayer()
+        && !player.paused
+        && player.readyState >= 2
+        && !player.error
+      ) {
         return;
       }
-      playChannel(ch, false, { preview: true });
     }
-  }, 320);
+    if (state.view !== "live" || state.selectedChannelId !== ch.id) return;
+    playChannel(ch, false, { preview: true });
+    loadChannelGuide(ch);
+  }, previewDelayMs);
 }
 
 function updateActiveRows(containerId, dataKey, value) {
@@ -1768,14 +3080,13 @@ function filteredChannels() {
 function channelsForCategory(cat) {
   if (cat === "All Channels") return visibleLiveChannels();
   if (libraryIndex.smartCategoryMap.has(cat)) return libraryIndex.smartCategoryMap.get(cat);
-  return libraryIndex.channelCategoryMap.get(cat) || channelsForCategoryUncached(cat);
-}
-
-function channelsForCategoryUncached(cat) {
-  if (cat === "All Channels") return visibleLiveChannels();
   const smart = smartCategoryRules.find((rule) => rule.name === cat);
-  if (smart) return data.channels.filter((ch) => matchesSmartCategory(ch, smart));
-  return data.channels.filter((ch) => ch.category === cat);
+  if (smart) {
+    const channels = data.channels.filter((ch) => matchesSmartCategory(ch, smart));
+    libraryIndex.smartCategoryMap.set(cat, channels);
+    return channels;
+  }
+  return libraryIndex.channelCategoryMap.get(cat) || [];
 }
 
 function visibleLiveChannels() {
@@ -1871,10 +3182,22 @@ function playSelectedChannel(showToast) {
   playChannel(ch, showToast);
 }
 
+function shouldSkipNativeChannelPlayback(ch, preview, options = {}) {
+  if (!ch || !preview || !shouldUseNativeLivePlayer(options) || !nativePlayerActive) return false;
+  if (state.currentMedia?.id !== ch.id) return false;
+  const useTranscoded = !!options.useTranscoded || channelPrefersTranscodedLive(ch);
+  const source = playableChannelSource(ch, { useTranscoded });
+  if (!source) return false;
+  const playbackKey = `${ch.id}:preview:${source}`;
+  return previewPlaybackKey === playbackKey;
+}
+
 async function playChannel(ch, showToast, options = {}) {
   if (!ch) return;
   const preview = !!options.preview;
+  if (nativeMenuOverlayActive() || nativeMenuPauseRequested) return;
   if (preview && (isVodPlaybackActive() || document.body.classList.contains("tv-player-open") || state.view === "movies" || state.view === "series")) return;
+  if (shouldSkipNativeChannelPlayback(ch, preview, options)) return;
   const requestId = ++playbackRequestId;
   try {
     const ready = await ensureProviderSessionReady();
@@ -1887,21 +3210,68 @@ async function playChannel(ch, showToast, options = {}) {
     return;
   }
   if (requestId !== playbackRequestId) return;
+  if (nativeMenuOverlayActive() || nativeMenuPauseRequested) return;
+  if (shouldSkipNativeChannelPlayback(ch, preview, options)) return;
   state.currentMedia = { id: ch.id, title: ch.name, type: "Channel" };
-  const source = playableChannelSource(ch);
-  logTvDebug("play-channel-start", { id: ch.id, streamId: ch.streamId, name: ch.name, source, preview, native: hasNativePlayer() });
-  if (hasNativePlayer() && source && !preview) {
-    stopNativePlayer();
-    enableHardwareVolume();
-    clearVideoError();
-    $("playState").textContent = "Loading";
-    startNativePlayer(source);
+  const useNative = shouldUseNativeLivePlayer(options);
+  if (!useNative) stopNativePlayer();
+  const useTranscoded = !!options.useTranscoded || channelPrefersTranscodedLive(ch);
+  const source = playableChannelSource(ch, { useTranscoded });
+  if (!source) {
+    $("playState").textContent = "Preview";
     return;
   }
+  const playbackKey = `${ch.id}:${preview ? "preview" : "full"}:${source}`;
   const player = $("videoPlayer");
-  enableHardwareVolume();
-  player.poster = "";
+  if (preview && previewPlaybackKey === playbackKey) {
+    if (shouldUseNativeLivePlayer(options) && nativePlayerActive) return;
+    if (
+      !shouldUseNativeLivePlayer(options)
+      && !player.paused
+      && player.readyState >= 2
+      && !player.error
+    ) {
+      return;
+    }
+  }
+  previewPlaybackKey = preview ? playbackKey : "";
+  logTvDebug("play-channel-start", {
+    id: ch.id,
+    streamId: ch.streamId,
+    name: ch.name,
+    source,
+    preview,
+    transcodeFallback: useTranscoded,
+    native: shouldUseNativeLivePlayer(options)
+  });
+  if (shouldUseNativeLivePlayer(options)) {
+    try {
+      player.muted = true;
+      player.pause();
+    } catch (_error) {}
+    player.poster = "";
+    clearPreviewFramePoster();
+    clearVideoError();
+    $("playState").textContent = "Loading";
+    document.body.classList.add("native-live-active");
+    const fullscreen = document.body.classList.contains("tv-player-open");
+    if (startNativePlayer(source, fullscreen)) {
+      if (!fullscreen) {
+        requestAnimationFrame(() => repositionNativePlayer(false));
+      }
+      return;
+    }
+    document.body.classList.remove("native-live-active");
+    clearPreviewFramePoster();
+    $("playState").textContent = preview ? "Preview" : "Unavailable";
+    if (!preview) showVideoError(`${ch.name} could not start native playback.`);
+    return;
+  }
+  resetVideoPlayer(player);
+  player.muted = true;
+  player.poster = ch.image || "";
   clearVideoError();
+  $("playState").textContent = "Loading";
   player.addEventListener("loadeddata", () => {
     if (requestId === playbackRequestId) clearVideoError();
   }, { once: true });
@@ -1910,15 +3280,33 @@ async function playChannel(ch, showToast, options = {}) {
   }, { once: true });
   player.addEventListener("playing", () => {
     if (requestId !== playbackRequestId) return;
+    player.muted = false;
+    enableHardwareVolume();
     clearVideoError();
+    if (player.videoWidth > 0 && player.videoHeight > 0) player.poster = "";
     $("playState").textContent = preview ? "Preview" : "Playing";
   }, { once: true });
   await loadVideoSource(player, source);
-  player.onerror = () => {
+  if (requestId !== playbackRequestId) return;
+  if (source.includes("live-hls")) {
+    await waitForVideoReady(player, 14000);
+  } else if (source.includes("transcode-live")) {
+    await waitForVideoReady(player, 12000);
+  }
+  if (requestId !== playbackRequestId) return;
+  const recoverChannelPlayback = (reason) => {
     if (requestId !== playbackRequestId) return;
-    logTvDebug("channel-video-error", { id: ch.id, name: ch.name });
-    if (requestId === playbackRequestId && !preview) showVideoError(`${ch.name} is not available right now.`);
+    logTvDebug(reason, { id: ch.id, name: ch.name, useTranscoded });
+    if (!useTranscoded && ch.streamId && isTvApp()) {
+      playChannel(ch, showToast, { ...options, preview, useTranscoded: true }).catch(() => {});
+      return;
+    }
+    resetVideoPlayer(player);
+    player.poster = ch.image || "";
+    $("playState").textContent = preview ? "Preview" : "Unavailable";
+    if (!preview) showVideoError(`${ch.name} is not available right now.`);
   };
+  player.onerror = () => recoverChannelPlayback("channel-video-error");
   if ($("autoplayToggle")?.checked !== false) {
     $("playState").textContent = preview ? "Preview" : "Loading";
     safePlayVideo(player, preview ? "channel-preview" : "channel", { id: ch.id, name: ch.name }, preview ? 2 : 3).then(() => {
@@ -1926,9 +3314,7 @@ async function playChannel(ch, showToast, options = {}) {
       $("playState").textContent = preview ? "Preview" : "Playing";
       showPlayerControls(false);
     }).catch(() => {
-      if (requestId !== playbackRequestId) return;
-      logTvDebug("channel-play-rejected", { id: ch.id, name: ch.name });
-      if (!preview) showVideoError(`${ch.name} could not start.`);
+      recoverChannelPlayback("channel-play-rejected");
     });
   }
 }
@@ -1938,52 +3324,54 @@ async function playMedia(item, showToast = true) {
   const mediaKey = item.id || item.streamUrl || title;
   const now = Date.now();
   if (now < playMediaLockUntil && mediaKey === playMediaLastKey) return;
-  playMediaLockUntil = now + 1500;
+  playMediaLockUntil = now + 400;
   playMediaLastKey = mediaKey;
 
   clearTimeout(channelPreviewTimer);
   const requestId = ++playbackRequestId;
   state.currentMedia = { ...item, title };
-  const directUrl = item.streamUrl || videoUrl;
-  logTvDebug("play-media-start", { id: item.id, title, type: item.type, container: item.container, source: directUrl, native: hasNativePlayer() });
+  const mediaSource = playableMediaSource(item, { forceTranscode: !!item.forceTranscode });
+  logTvDebug("play-media-start", { id: item.id, title, type: item.type, container: item.container, source: mediaSource, native: useNativePlayerForVod() });
   $("nowCategory").textContent = item.category || item.type || "Now Playing";
   $("nowTitle").textContent = title;
   $("nowDesc").textContent = item.description || item.program || `${item.type || "Video"} playback`;
   $("favoriteButton").textContent = isFavorite(item.id) ? "Unfavorite" : "Favorite";
 
-  if (hasNativePlayer() && directUrl) {
-    stopNativePlayer();
+  if (useNativePlayerForVod() && mediaSource) {
     clearVideoError();
+    clearPreviewFramePoster();
     $("playState").textContent = "Loading";
-    startNativePlayer(directUrl);
-    if (isTvApp()) {
-      if (state.view !== "live") {
-        state.returnView = state.view;
-        if (state.view === "series") state.returnSeriesScreen = state.seriesScreen;
-      }
-      setView("live", { keepPlayerOpen: true });
-      $("sectionKicker").textContent = item.type || "Video";
-      $("sectionTitle").textContent = title;
-      $("miniGuide").innerHTML = "";
-      openPlayerFullscreen(false);
-    } else {
-      setView("live");
-      $("sectionKicker").textContent = item.type || "Video";
-      $("sectionTitle").textContent = title;
-      $("miniGuide").innerHTML = "";
-      setTimeout(() => {
-        if (requestId !== playbackRequestId) return;
+    document.body.classList.add("native-live-active");
+    if (startNativePlayer(mediaSource, true)) {
+      if (isTvApp()) {
+        if (state.view !== "live") {
+          state.returnView = state.view;
+          if (state.view === "series") state.returnSeriesScreen = state.seriesScreen;
+        }
+        setView("live", { keepPlayerOpen: true });
+        $("sectionKicker").textContent = item.type || "Video";
+        $("sectionTitle").textContent = title;
+        $("miniGuide").innerHTML = "";
         openPlayerFullscreen(false);
-      }, 80);
+      } else {
+        setView("live");
+        $("sectionKicker").textContent = item.type || "Video";
+        $("sectionTitle").textContent = title;
+        $("miniGuide").innerHTML = "";
+        setTimeout(() => {
+          if (requestId !== playbackRequestId) return;
+          openPlayerFullscreen(false);
+        }, 80);
+      }
+      if (showToast) toast(`Opening ${title}`);
+      return;
     }
-    if (showToast) toast(`Opening ${title}`);
-    return;
   }
 
-  const mediaSource = playableMediaSource(item);
   logTvDebug("play-media-web", { id: item.id, title, type: item.type, source: mediaSource });
   const player = $("videoPlayer");
   enableHardwareVolume();
+  resetVideoPlayer(player);
   player.poster = item.image || "";
   clearVideoError();
   await loadVideoSource(player, mediaSource);
@@ -2044,22 +3432,33 @@ function isVodPlaybackActive() {
 function stopVideoPlayback() {
   playbackRequestId += 1;
   clearTimeout(channelPreviewTimer);
+  previewPlaybackKey = "";
   if (hasNativePlayer()) stopNativePlayer();
-  if (hlsPlayer) {
-    hlsPlayer.destroy();
-    hlsPlayer = null;
-  }
   const player = $("videoPlayer");
-  player.onerror = null;
-  player.pause();
+  resetVideoPlayer(player);
   player.poster = "";
-  player.removeAttribute("src");
-  player.load();
   $("playState").textContent = "Ready";
   $("videoOverlay").classList.remove("visible");
   showPlayerControls(false);
   const ch = selectedChannel();
   state.currentMedia = ch ? { id: ch.id, title: ch.name, type: "Channel" } : null;
+}
+
+function resetVideoPlayer(player = $("videoPlayer")) {
+  if (hlsPlayer) {
+    try {
+      hlsPlayer.destroy();
+    } catch (_error) {}
+    hlsPlayer = null;
+  }
+  player.onerror = null;
+  try {
+    player.pause();
+  } catch (_error) {}
+  player.removeAttribute("src");
+  try {
+    player.load();
+  } catch (_error) {}
 }
 
 function clearPreviewPlayer() {
@@ -2071,30 +3470,55 @@ function clearPreviewPlayer() {
   if (player.poster) player.poster = "";
 }
 
-function playableMediaSource(item) {
+function transcodeMovieUrl(url, options = {}) {
+  let source = `/api/transcode-movie?url=${encodeURIComponent(url)}`;
+  const startSeconds = Math.max(0, Math.round(Number(options.startSeconds || 0)));
+  if (startSeconds > 0) source += `&start=${startSeconds}`;
+  return source;
+}
+
+function playableMediaSource(item, options = {}) {
   const url = item.streamUrl || videoUrl;
-  if (hasNativePlayer()) return absoluteStreamUrl(url);
+  if (!url) return "";
   const source = `${item.container || ""} ${url}`.toLowerCase();
-  if (source.includes(".mkv") || source.includes("mkv")) {
-    return `/api/transcode-movie?url=${encodeURIComponent(url)}`;
+  const needsTranscode = source.includes(".mkv") || source.includes("mkv");
+  if (options.forceTranscode || item.forceTranscode) {
+    return transcodeMovieUrl(url, options);
   }
+  if (isTvApp()) {
+    if (needsTranscode || item.type === "Movie" || item.type === "Episode") {
+      return transcodeMovieUrl(url, options);
+    }
+    return absoluteStreamUrl(url);
+  }
+  if (needsTranscode) {
+    return transcodeMovieUrl(url, options);
+  }
+  if (useNativePlayerForVod()) return absoluteStreamUrl(url);
   return url;
 }
 
-function playableChannelSource(ch) {
-  return ch?.streamUrl || "";
+function playableChannelSource(ch, options = {}) {
+  if (isTvApp() && ch?.streamId) {
+    if (options.useTranscoded || channelNeedsTranscodedPreview(ch)) {
+      return `/api/live-hls/${encodeURIComponent(ch.streamId)}/playlist.m3u8`;
+    }
+    return `/api/stream/live/${encodeURIComponent(ch.streamId)}.m3u8`;
+  }
+  if (options.transcode && ch?.streamId) {
+    return `/api/transcode-live/${encodeURIComponent(ch.streamId)}.mp4`;
+  }
+  if (ch?.streamUrl) return ch.streamUrl;
+  if (ch?.streamId) return `/api/stream/live/${encodeURIComponent(ch.streamId)}.m3u8`;
+  return "";
 }
 
 function loadVideoSource(player, source) {
   const url = source || "";
-  if (url && sameVideoSource(player, url) && player.readyState >= 1) return Promise.resolve();
+  if (url && sameVideoSource(player, url) && player.readyState >= 1 && !hlsPlayer) return Promise.resolve();
   logTvDebug("load-video-source", { source: url });
-  if (hlsPlayer) {
-    hlsPlayer.destroy();
-    hlsPlayer = null;
-  }
-  player.removeAttribute("src");
-  player.load();
+  resetVideoPlayer(player);
+  player.muted = true;
   if (!url) {
     showVideoError("No stream URL for this channel.");
     return Promise.resolve();
@@ -2105,36 +3529,67 @@ function loadVideoSource(player, source) {
     return waitForVideoReady(player, 2600);
   }
   if (isHlsUrl(url) && window.Hls?.isSupported()) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
-      hlsPlayer = new window.Hls({ enableWorker: true, lowLatencyMode: true });
-      hlsPlayer.on(window.Hls.Events.MANIFEST_PARSED, finish);
-      hlsPlayer.on(window.Hls.Events.ERROR, (_event, data) => {
-        if (!data?.fatal) return;
-        hlsPlayer.destroy();
-        hlsPlayer = null;
-        player.src = url;
-        player.load();
-        finish();
-      });
-      hlsPlayer.loadSource(url);
-      hlsPlayer.attachMedia(player);
-      setTimeout(finish, 1500);
-    });
-  } else {
-    player.src = url;
-    player.load();
-    return waitForVideoReady(player, 1600);
+    return attachHlsSource(player, url);
   }
+  player.src = url;
+  player.load();
+  return waitForVideoReady(player, url.includes("transcode-live") || url.includes("live-hls") ? 14000 : 1600);
+}
+
+function attachHlsSource(player, url) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let fatalRetries = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    hlsPlayer = new window.Hls({
+      enableWorker: !isTvApp(),
+      lowLatencyMode: false,
+      backBufferLength: 20,
+      maxBufferLength: 18,
+      maxMaxBufferLength: 36,
+      manifestLoadingMaxRetry: 2,
+      levelLoadingMaxRetry: 2,
+      fragLoadingMaxRetry: 2
+    });
+    hlsPlayer.on(window.Hls.Events.MANIFEST_PARSED, finish);
+    hlsPlayer.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (!data?.fatal) return;
+      logTvDebug("hls-fatal-error", { type: data.type, details: data.details, url, fatalRetries });
+      if (fatalRetries < 2 && data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+        fatalRetries += 1;
+        try {
+          hlsPlayer.startLoad(-1);
+          return;
+        } catch (_error) {}
+      }
+      if (fatalRetries < 2 && data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+        fatalRetries += 1;
+        try {
+          hlsPlayer.recoverMediaError();
+          return;
+        } catch (_error) {}
+      }
+      try {
+        hlsPlayer.destroy();
+      } catch (_error) {}
+      hlsPlayer = null;
+      try {
+        player.pause();
+      } catch (_error) {}
+      finish();
+    });
+    hlsPlayer.loadSource(url);
+    hlsPlayer.attachMedia(player);
+    setTimeout(finish, isTvApp() ? 2200 : 1500);
+  });
 }
 
 function shouldUseNativeHlsOnThisDevice() {
-  return isTvApp();
+  return isTvApp() && !window.Hls?.isSupported();
 }
 
 function waitForVideoReady(player, timeout = 1800) {
@@ -2189,13 +3644,46 @@ function sameVideoSource(player, source) {
   }
 }
 
+function showChannelPlaybackError(message, ch) {
+  nativePlayerActive = false;
+  nativePlayerPlaying = false;
+  previewPlaybackKey = "";
+  document.body.classList.remove("native-live-active");
+  try {
+    window.StreamlineNativePlayer?.stop?.();
+  } catch (_error) {}
+  const player = $("videoPlayer");
+  logTvDebug("show-video-error", { message, channel: ch?.name || "" });
+  try {
+    player.muted = true;
+    player.pause();
+  } catch (_error) {}
+  player.poster = ch?.image || "";
+  if (ch?.image) setPreviewFramePoster(ch);
+  $("playState").textContent = ch?.name ? `${ch.name} is not available.` : "Unavailable";
+  $("videoOverlay").classList.add("visible");
+  document.body.classList.add("channel-unavailable");
+  showPlayerControls(false);
+  if (!document.body.classList.contains("tv-player-open")) {
+    toast(message || "Channel unavailable.");
+  }
+}
+
 function showVideoError(message) {
+  const ch = selectedChannel()
+    || (state.currentMedia?.type === "Channel"
+      ? data.channels.find((item) => item.id === state.currentMedia.id)
+      : null);
+  if (isTvApp() && ch) {
+    showChannelPlaybackError(message, ch);
+    return;
+  }
   const player = $("videoPlayer");
   logTvDebug("show-video-error", { message });
   $("playState").textContent = "Unavailable";
-  if (player.readyState === 0) {
-    player.removeAttribute("src");
-    player.load();
+  resetVideoPlayer(player);
+  if (ch?.image && state.view === "live" && !document.body.classList.contains("tv-player-open")) {
+    player.poster = ch.image;
   }
   $("videoOverlay").classList.add("visible");
   showPlayerControls(false);
@@ -2203,6 +3691,7 @@ function showVideoError(message) {
 }
 
 function clearVideoError() {
+  document.body.classList.remove("channel-unavailable");
   $("playState").textContent = "Loading";
   $("videoOverlay").classList.remove("visible");
 }
@@ -2238,15 +3727,34 @@ async function loadChannelGuide(ch) {
   }
 }
 
-function surfChannel(direction) {
+function changeChannel(direction, options = {}) {
   const channels = filteredChannels();
-  if (!channels.length) return;
+  if (!channels.length) return null;
   const currentIndex = Math.max(0, channels.findIndex((ch) => ch.id === state.selectedChannelId));
   const next = channels[(currentIndex + direction + channels.length) % channels.length];
   state.selectedChannelId = next.id;
-  renderSelectedChannel();
-  playChannel(next, false);
-  if (!(document.fullscreenElement || document.webkitFullscreenElement)) {
+  updateActiveRows("channelList", "channelId", next.id);
+  const preview = options.preview ?? !document.body.classList.contains("tv-player-open");
+  clearTimeout(channelPreviewTimer);
+  playChannel(next, false, { preview });
+  if (preview) {
+    clearTimeout(channelInfoTimer);
+    channelInfoTimer = setTimeout(() => {
+      if (state.selectedChannelId !== next.id) return;
+      renderSelectedChannel({ loadGuide: false });
+    }, previewDelayMs);
+  } else {
+    renderSelectedChannel();
+  }
+  const row = $("channelList")?.querySelector(`[data-channel-id="${cssEscape(next.id)}"]`);
+  row?.focus();
+  row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return next;
+}
+
+function surfChannel(direction) {
+  changeChannel(direction, { preview: false });
+  if (!isTvApp() && !(document.fullscreenElement || document.webkitFullscreenElement)) {
     setTimeout(() => openPlayerFullscreen(false), 80);
   }
 }
@@ -2359,11 +3867,7 @@ function renderMovies(options = {}) {
   });
 
   let movies = state.movieCategory === "Featured" ? [...data.movies] : data.movies.filter((m) => m.category === state.movieCategory);
-  movies.sort((a, b) => {
-    const titleCompare = a.title.localeCompare(b.title);
-    if (titleCompare !== 0) return state.movieSortAsc ? titleCompare : -titleCompare;
-    return containerRank(a) - containerRank(b);
-  });
+  movies.sort((a, b) => compareMoviesForDisplay(a, b, { titleAsc: state.movieSortAsc }));
   renderPosterGrid($("movieGrid"), movies, openMovieDetail, gridLimit);
   renderMovieDetail();
   if (isTvApp() && options.focusTab) {
@@ -2580,6 +4084,7 @@ function renderFavorites() {
 }
 
 function renderSearch() {
+  ensureSearchIndex();
   const q = normalizeSearch($("searchInput")?.value || "");
   const suggestions = ["law and order", "halloween", "prime crime", "faith", "sports", "kids"];
   const suggestionRow = $("suggestionRow");
@@ -2628,11 +4133,15 @@ function scheduleSearchRender() {
 
 function openSearchResult(result) {
   if (result.type === "Channel") {
-    state.category = "All Channels";
-    state.selectedChannelId = result.item.id;
-    setView("live");
-    renderLive();
-    playSelectedChannel(true);
+    if (isTvApp()) {
+      openLiveChannelFullscreen(result.item);
+    } else {
+      state.category = liveCategoryForChannel(result.item);
+      state.selectedChannelId = result.item.id;
+      setView("live");
+      renderLive();
+      playSelectedChannel(true);
+    }
     return;
   }
   if (result.type === "Movie") {

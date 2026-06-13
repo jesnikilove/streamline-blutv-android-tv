@@ -4,10 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Streamline BluTV</title>
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem("streamlineLoggedIn") === "true") {
+          document.documentElement.classList.add("streamline-autologin");
+        }
+      } catch (_error) {}
+    })();
+  </script>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <main id="app" class="app-shell">
+    <section id="bootScreen" class="boot-screen hidden" aria-live="polite" aria-label="Loading Streamline BluTV">
+      <div class="boot-card">
+        <div class="brand-mark">SB</div>
+        <h1>Streamline BluTV</h1>
+        <p id="bootStatus">Loading your library...</p>
+      </div>
+    </section>
+
     <section id="loginScreen" class="login-screen" aria-label="Streamline BluTV login">
       <div class="brand-panel">
         <div class="brand-mark">SB</div>
@@ -95,20 +112,23 @@
                 <div id="videoOverlay" class="video-overlay">
                   <span id="playState">Ready</span>
                 </div>
-                <div id="playerControls" class="player-controls hidden">
-                  <div>
-                    <p id="controlTitle" class="kicker">Player</p>
-                    <h3 id="controlMediaTitle">Paused</h3>
-                  </div>
-                  <div class="control-row">
-                    <button id="rewindButton" class="control-btn focusable" type="button">RW</button>
-                    <button id="playerPlayPause" class="control-btn focusable" type="button">Play</button>
-                    <button id="forwardButton" class="control-btn focusable" type="button">FF</button>
-                    <button id="ccButton" class="control-btn focusable" type="button">CC Off</button>
-                    <button id="wideButton" class="control-btn focusable" type="button">Wide</button>
-                    <button id="exitFullscreenButton" class="control-btn focusable" type="button">Exit</button>
-                  </div>
-                  <input id="seekBar" class="seek-bar focusable" type="range" min="0" max="1000" value="0" aria-label="Playback position">
+              </div>
+              <div id="playerControls" class="player-controls hidden">
+                <div>
+                  <p id="controlTitle" class="kicker">Player</p>
+                  <h3 id="controlMediaTitle">Paused</h3>
+                </div>
+                <div class="control-row">
+                  <button id="rewindButton" class="control-btn focusable" type="button">RW</button>
+                  <button id="playerPlayPause" class="control-btn focusable" type="button">Play</button>
+                  <button id="forwardButton" class="control-btn focusable" type="button">FF</button>
+                  <button id="ccButton" class="control-btn focusable" type="button">CC Off</button>
+                  <button id="wideButton" class="control-btn focusable" type="button">Wide</button>
+                  <button id="exitFullscreenButton" class="control-btn focusable" type="button">Exit</button>
+                </div>
+                <div id="seekBarFocus" class="seek-bar-wrap focusable hidden" tabindex="0" aria-label="Playback timeline">
+                  <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" value="0" tabindex="-1" aria-hidden="true">
+                  <span id="seekBarHint" class="seek-bar-hint">Down opens · Left/Right move · Select or Up jumps</span>
                 </div>
               </div>
               <div class="now-card">
@@ -160,7 +180,11 @@
             <input id="searchInput" class="focusable" placeholder="Search channels, movies, and series" autocomplete="off">
           </div>
           <div id="suggestionRow" class="chip-row"></div>
-          <div id="searchResults" class="search-results"></div>
+          <div class="search-layout">
+            <div>
+              <div id="searchResults" class="poster-grid series-grid"></div>
+            </div>
+          </div>
         </section>
 
         <section id="viewSettings" class="view">

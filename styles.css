@@ -104,6 +104,53 @@ input {
   font-size: 20px;
 }
 
+html.streamline-autologin #loginScreen {
+  display: none !important;
+}
+
+html.streamline-autologin #bootScreen {
+  display: grid !important;
+}
+
+html.streamline-autologin #bootScreen.hidden {
+  display: grid !important;
+}
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483600;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at top, rgba(128, 72, 255, 0.22), transparent 42%),
+    #090815;
+}
+
+.boot-screen.hidden {
+  display: none;
+}
+
+.boot-card {
+  text-align: center;
+  padding: 36px 42px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(var(--section-rgb), 0.22);
+  background: rgba(24, 22, 48, 0.94);
+  box-shadow: 0 26px 60px var(--shadow);
+}
+
+.boot-card h1 {
+  margin: 18px 0 8px;
+  font-size: 28px;
+}
+
+.boot-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 18px;
+}
+
 .login-card,
 .settings-card,
 .detail-panel,
@@ -584,6 +631,45 @@ p {
   opacity: 0.42;
 }
 
+body.tv-app .seek-bar:focus {
+  outline: 2px solid var(--gold, #f5c445);
+  outline-offset: 3px;
+}
+
+body.tv-app .seek-bar-wrap {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+}
+
+body.tv-app .seek-bar-wrap.hidden {
+  display: none;
+}
+
+body.tv-app .seek-bar-wrap:focus {
+  outline: 2px solid var(--gold, #f5c445);
+  outline-offset: 2px;
+  border-color: rgba(245, 196, 69, 0.45);
+  background: rgba(245, 196, 69, 0.08);
+}
+
+body.tv-app .seek-bar-wrap .seek-bar {
+  width: 100%;
+  pointer-events: none;
+}
+
+body.tv-app .seek-bar-hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+body.tv-app.tv-player-menu-open .seek-bar {
+  min-height: 28px;
+}
+
 .control-btn:nth-child(1) {
   background: rgba(49, 191, 97, 0.28);
 }
@@ -593,11 +679,11 @@ p {
 }
 
 .control-btn:nth-child(3) {
-  background: rgba(37, 124, 255, 0.26);
+  background: rgba(240, 68, 68, 0.24);
 }
 
 .control-btn:nth-child(4) {
-  background: rgba(240, 68, 68, 0.24);
+  background: rgba(37, 124, 255, 0.26);
 }
 
 .now-card {
@@ -1290,6 +1376,39 @@ body.tv-app .poster-grid {
   gap: 10px;
 }
 
+body.tv-app #viewSearch.active {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.tv-app #viewSearch .search-box {
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+body.tv-app #viewSearch .search-box input {
+  min-height: 40px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+body.tv-app #viewSearch .chip-row {
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+body.tv-app #viewSearch .search-layout {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+body.tv-app #viewSearch .search-layout > div {
+  min-height: 0;
+}
+
 body.tv-app .movie-detail {
   grid-template-columns: 150px minmax(0, 1fr);
   gap: 10px;
@@ -1337,57 +1456,190 @@ body.tv-app .player-panel {
   background: rgba(10, 9, 24, 0.58);
 }
 
+body.tv-app.native-live-active .video-overlay {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.tv-app.channel-unavailable .video-overlay.visible,
+body.tv-app.channel-unavailable.native-live-active .video-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+  display: grid;
+  z-index: 60;
+}
+
+body.tv-app.channel-unavailable .video-frame {
+  background: #000;
+}
+
+body.tv-app.native-live-active .video-frame video {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.tv-app .player-panel {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas:
+    "video"
+    "now"
+    "guide";
+  min-height: 0;
+}
+
 body.tv-app .video-frame {
+  grid-area: video;
   width: 100%;
   max-width: 100%;
-  max-height: 44vh;
+  max-height: 34vh;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   border: 1px solid rgba(var(--section-rgb), 0.42);
   border-radius: var(--radius);
+  background: #000;
 }
 
-body.tv-app .video-frame video {
-  display: block;
+body.tv-app #playerControls {
+  grid-area: video;
+  align-self: end;
+  justify-self: stretch;
+  z-index: 5;
+  margin: 0 8px 8px;
+}
+
+body.tv-app #playerControls.hidden {
+  display: none !important;
 }
 
 body.tv-app .now-card {
+  grid-area: now;
   padding: 10px;
   gap: 10px;
-}
-
-body.tv-app .now-card h3 {
-  font-size: 16px;
-  margin-bottom: 4px;
-  line-height: 1.15;
-}
-
-body.tv-app .now-card p {
-  font-size: 11px;
-  line-height: 1.25;
+  flex-shrink: 0;
 }
 
 body.tv-app .mini-guide {
+  grid-area: guide;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 8px;
   gap: 6px;
 }
 
-body.tv-app .guide-item {
-  grid-template-columns: 62px 1fr;
-  padding: 7px 8px;
-  font-size: 11px;
-  line-height: 1.15;
+body.tv-app.native-live-active .video-frame {
+  background: #000;
 }
 
-body.tv-app .video-overlay.visible {
-  font-size: 18px;
-  padding: 16px;
+body.tv-app .video-frame video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+body.tv-app .video-frame.wide-mode video,
+body.tv-app:not(.native-live-active) .video-frame video {
+  object-fit: cover;
 }
 
 body.tv-app .player-controls {
   inset: auto 14px 14px;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+body.tv-app:not(.tv-player-open) .player-controls:not(.hidden) {
+  position: relative;
+  inset: auto;
+  margin: 0 8px 8px;
+  z-index: 5;
+}
+
+body.tv-app:not(.tv-player-open):not(.tv-player-menu-open) .player-controls:not(.hidden) .kicker,
+body.tv-app:not(.tv-player-open):not(.tv-player-menu-open) .player-controls:not(.hidden) h3,
+body.tv-app:not(.tv-player-open):not(.tv-player-menu-open) .player-controls:not(.hidden) .seek-bar {
+  display: none;
+}
+
+body.tv-app.tv-player-menu-open #playerControls.live-player-menu .seek-bar,
+body.tv-app.tv-player-menu-open #playerControls.live-player-menu .control-row .control-btn {
+  display: inline-flex;
+}
+
+body.tv-app.tv-player-menu-open #playerControls.live-player-menu .seek-bar:disabled {
+  opacity: 0.35;
+}
+
+body.tv-app.tv-player-menu-open #playerControls.vod-player-menu .seek-bar,
+body.tv-app.tv-player-menu-open #playerControls.vod-player-menu .control-row .control-btn {
+  display: inline-flex;
+}
+
+body.tv-app #playerControls.live-player-menu .seek-bar.live-muted {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+body.tv-app #playerControls.live-player-menu .control-btn.live-muted:not(:disabled) {
+  opacity: 1;
+}
+
+body.tv-app.tv-player-open.tv-controls-open .player-panel,
+body.tv-app.tv-player-open.tv-controls-open .video-frame,
+body.tv-app.tv-player-open.tv-controls-open .live-layout {
+  background: #000;
+}
+
+body.tv-app.tv-player-open #playerControls {
+  grid-area: auto;
+  align-self: auto;
+}
+
+body.tv-app #playerControls.tv-player-menu,
+body.tv-app.tv-player-menu-open #playerControls:not(.hidden) {
+  position: fixed !important;
+  inset: auto 0 0 0 !important;
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 18px 22px 26px !important;
+  z-index: 2147483000 !important;
+  display: grid !important;
+  pointer-events: auto !important;
+  background: rgba(5, 2, 15, 0.97) !important;
+  border-top: 2px solid rgba(245, 196, 69, 0.45) !important;
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.55) !important;
+}
+
+body.tv-app.tv-player-menu-open #videoFrame {
+  background-size: cover !important;
+  background-position: center !important;
+}
+
+body.tv-app.tv-player-open.tv-controls-open .player-controls:not(.hidden) {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 14px 18px 20px;
+  z-index: 500;
+  pointer-events: auto;
+  background: linear-gradient(180deg, rgba(5, 2, 15, 0) 0%, rgba(5, 2, 15, 0.92) 28%, rgba(5, 2, 15, 0.98) 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+body.tv-app.tv-player-open .player-controls:not(.hidden) {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  margin: 0;
+  z-index: 400;
+  pointer-events: auto;
 }
 
 body.tv-app .player-controls h3 {
@@ -1413,6 +1665,10 @@ body.tv-app.tv-player-open .mini-guide {
   display: none;
 }
 
+body.tv-app.tv-player-open .player-controls:not(.hidden) {
+  display: grid;
+}
+
 body.tv-app.tv-player-open .main-pane {
   min-height: 100vh;
   padding: 0;
@@ -1430,14 +1686,22 @@ body.tv-app.tv-player-open .live-layout {
   display: block;
 }
 
-body.tv-app.tv-player-open .player-panel {
-  border: 0;
-  border-radius: 0;
-}
-
 body.tv-app.tv-player-open .video-frame {
   aspect-ratio: auto;
+  max-height: none;
+  width: 100%;
+  height: 100vh;
   border: 0;
+}
+
+body.tv-app.tv-player-open .player-panel {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  min-height: 100vh;
+  border: 0;
+  border-radius: 0;
 }
 
 body.tv-app .focusable:focus {

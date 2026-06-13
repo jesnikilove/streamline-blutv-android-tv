@@ -5,6 +5,7 @@
   "description": "Streamline BluTV Android TV style web prototype with Xtream and M3U testing proxy.",
   "scripts": {
     "start": "node server/server.js",
-    "check": "node --check app.js && node --check server/server.js"
+    "check": "node --check app.js && node --check server/server.js",
+    "audit-channels": "node server/audit-channels.js"
   }
 }

@@ -7,12 +7,15 @@ const { Readable } = require("stream");
 const { spawn } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
+const { runChannelAudit } = require("./audit-channels-lib");
+const { loadStoredCredentials, persistProviderCredentials } = require("./provider-credentials");
 const port = Number(process.env.PORT || 4188);
 const host = process.env.HOST || "127.0.0.1";
 const liveLimit = readLimit(process.env.LIVE_LIMIT);
 const vodLimit = readLimit(process.env.VOD_LIMIT);
 const seriesLimit = readLimit(process.env.SERIES_LIMIT);
 let providerSession = invalidSession();
+let channelAuditState = { running: false, progress: 0, total: 0, error: "", result: null };
 const liveHlsSessions = new Map();
 const movieHlsSessions = new Map();
 const clientLogs = [];
@@ -63,6 +66,48 @@ http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url.startsWith("/api/client-logs")) {
       return sendJson(res, 200, { ok: true, logs: clientLogs.slice(-120) });
     }
+    if (req.method === "POST" && req.url.startsWith("/api/audit-channels")) {
+      const auditSession = await resolveProviderSession();
+      if (!auditSession?.base) {
+        return sendJson(res, 400, { ok: false, message: "Load your provider before auditing channels." });
+      }
+      if (channelAuditState.running) {
+        return sendJson(res, 200, { ok: true, running: true, state: channelAuditState });
+      }
+      const auditRequestUrl = new URL(req.url, `http://${host}:${port}`);
+      const body = req.url === "/api/audit-channels" ? await readJson(req) : {};
+      const category = String(body.category || auditRequestUrl.searchParams.get("category") || "").trim();
+      channelAuditState = { running: true, progress: 0, total: 0, category, error: "", result: null };
+      runChannelAudit(auditSession, {
+        category,
+        onProgress(progress, total) {
+          channelAuditState.progress = progress;
+          channelAuditState.total = total;
+        }
+      }).then((result) => {
+        channelAuditState = {
+          running: false,
+          progress: result.totalAudited,
+          total: result.totalAudited,
+          category: result.category || category || "",
+          error: "",
+          result
+        };
+      }).catch((error) => {
+        channelAuditState = {
+          running: false,
+          progress: 0,
+          total: 0,
+          category,
+          error: error.message || String(error),
+          result: null
+        };
+      });
+      return sendJson(res, 200, { ok: true, started: true, category: category || null });
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/audit-channels")) {
+      return sendJson(res, 200, { ok: true, state: channelAuditState });
+    }
     if (req.method === "GET" && req.url.startsWith("/api/stream/live/")) {
       return await proxyLiveStream(req, res);
     }
@@ -90,6 +135,10 @@ http.createServer(async (req, res) => {
   }
 }).listen(port, host, () => {
   console.log(`Streamline BluTV preview running at http://${host}:${port}`);
+  const stored = loadStoredCredentials();
+  if (stored?.base) {
+    warmXtreamSession(stored).catch(() => {});
+  }
 });
 
 function setCors(res) {
@@ -120,9 +169,14 @@ function serveFile(req, res) {
 }
 
 function tvApkCandidates() {
+  const projects = path.join(os.homedir(), "Desktop", "Projects", "StreamlineBluTV");
   return [
     process.env.TV_APK_PATH,
     path.join(os.homedir(), "Desktop", "tv.apk"),
+    path.join(projects, "tv.apk"),
+    path.join(projects, "StreamlineBluTV-FireTV.apk"),
+    path.join(root, "..", "tv.apk"),
+    path.join(root, "..", "StreamlineBluTV-FireTV.apk"),
     path.join(root, "..", "StreamlineBluTV-FireTV-App", "dist", "StreamlineBluTV-FireTV.apk")
   ].filter(Boolean);
 }
@@ -237,7 +291,16 @@ async function warmXtreamSession({ server, username, password }) {
   const auth = await fetchJson(`${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`);
   if (auth.user_info && Number(auth.user_info.auth) === 0) throw new Error("Provider rejected this login.");
   providerSession = { base, username, password };
+  persistProviderCredentials({ server: base, username, password });
   return { ready: true };
+}
+
+async function resolveProviderSession() {
+  if (providerSession.base) return providerSession;
+  const stored = loadStoredCredentials();
+  if (!stored) return invalidSession();
+  await warmXtreamSession(stored);
+  return providerSession;
 }
 
 async function loadChannelEpg(streamId, streamUrl) {
@@ -355,6 +418,7 @@ function applyLimit(items, limit) {
 }
 
 async function proxyLiveStream(req, res) {
+  await resolveProviderSession();
   if (!providerSession.base) throw new Error("Load your provider before playing live TV.");
   const requestUrl = new URL(req.url, `http://${host}:${port}`);
   const match = requestUrl.pathname.match(/^\/api\/stream\/live\/([^/]+)\.m3u8$/);
@@ -387,17 +451,32 @@ async function proxyStreamAsset(req, res) {
 }
 
 async function transcodeMovie(req, res) {
+  await resolveProviderSession();
   const requestUrl = new URL(req.url, `http://${host}:${port}`);
   const movieUrl = requestUrl.searchParams.get("url");
   if (!movieUrl) throw new Error("Missing movie URL.");
+  const startSec = Math.max(0, Math.round(Number(requestUrl.searchParams.get("start") || 0)));
   const audioMap = await preferredAudioMap(movieUrl);
+  if (startSec > 0) {
+    console.log("[transcode-movie] seek start", startSec, "sec");
+  }
 
   const args = [
     "-hide_banner",
     "-loglevel", "error",
-    "-i", movieUrl,
-    "-map", "0:v:0",
   ];
+  if (startSec > 0) args.push("-ss", String(startSec));
+  args.push(
+    "-probesize", startSec > 0 ? "50M" : "32",
+    "-analyzeduration", startSec > 0 ? "10M" : "0",
+    "-i", movieUrl,
+  );
+  if (startSec > 0) {
+    args.push("-reset_timestamps", "1", "-avoid_negative_ts", "make_zero");
+  }
+  args.push(
+    "-map", "0:v:0",
+  );
   if (audioMap) args.push("-map", audioMap);
   else args.push("-an");
   args.push(
@@ -443,19 +522,26 @@ async function transcodeLive(req, res) {
   const args = [
     "-hide_banner",
     "-loglevel", "error",
+    "-probesize", "32M",
+    "-analyzeduration", "5M",
     "-fflags", "+genpts",
     "-i", liveUrl,
     "-map", "0:v:0?",
     "-map", "0:a:0?",
+    "-vf", "scale=-2:720",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-tune", "zerolatency",
     "-pix_fmt", "yuv420p",
     "-profile:v", "baseline",
     "-level", "3.1",
+    "-maxrate", "2500k",
+    "-bufsize", "5000k",
+    "-g", "48",
     "-c:a", "aac",
     "-b:a", "128k",
-    "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+    "-ac", "2",
+    "-movflags", "frag_keyframe+empty_moov+faststart",
     "-f", "mp4",
     "pipe:1"
   ];
@@ -482,9 +568,10 @@ async function serveLiveHls(req, res) {
   if (!match) throw new Error("Missing live HLS stream.");
   const streamId = decodeURIComponent(match[1]);
   const fileName = decodeURIComponent(match[2]);
-  const session = ensureLiveHlsSession(streamId);
+  const session = await ensureLiveHlsSession(streamId);
   if (fileName === "playlist.m3u8") {
     await waitForFile(session.playlistPath, 6500);
+    await waitForFile(path.join(session.dir, "seg_00002.ts"), 12000);
   }
   const filePath = path.resolve(session.dir, fileName);
   if (!filePath.startsWith(session.dir)) throw new Error("Invalid HLS segment.");
@@ -495,11 +582,25 @@ async function serveLiveHls(req, res) {
       "Content-Type": contentType,
       "Cache-Control": "no-store"
     });
+    if (fileName === "playlist.m3u8") {
+      res.end(rewriteLocalHlsPlaylist(data.toString("utf8"), streamId));
+      return;
+    }
     res.end(data);
   });
 }
 
-function ensureLiveHlsSession(streamId) {
+function rewriteLocalHlsPlaylist(body, streamId) {
+  const prefix = `/api/live-hls/${encodeURIComponent(streamId)}/`;
+  return String(body || "").split(/\r?\n/).map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return line;
+    if (trimmed.startsWith("/")) return trimmed;
+    return `${prefix}${trimmed}`;
+  }).join("\n");
+}
+
+async function ensureLiveHlsSession(streamId) {
   const existing = liveHlsSessions.get(streamId);
   if (existing && !existing.ffmpeg.killed) {
     existing.lastUsed = Date.now();
@@ -513,31 +614,43 @@ function ensureLiveHlsSession(streamId) {
     try { fs.unlinkSync(path.join(dir, file)); } catch (_error) {}
   });
   const liveUrl = `${base}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.ts`;
+  const audioMap = await preferredAudioMap(liveUrl);
   const playlistPath = path.join(dir, "playlist.m3u8");
   const args = [
     "-hide_banner",
     "-loglevel", "error",
+    "-probesize", "32M",
+    "-analyzeduration", "5M",
     "-fflags", "+genpts",
     "-i", liveUrl,
     "-map", "0:v:0?",
-    "-map", "0:a:0?",
+  ];
+  if (audioMap) args.push("-map", audioMap);
+  else args.push("-map", "0:a:0?");
+  args.push(
+    "-vf", "scale=-2:720",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-tune", "zerolatency",
     "-pix_fmt", "yuv420p",
     "-profile:v", "baseline",
     "-level", "3.1",
+    "-maxrate", "2500k",
+    "-bufsize", "5000k",
+    "-g", "48",
     "-c:a", "aac",
     "-b:a", "128k",
+    "-ac", "2",
+    "-metadata:s:a:0", "language=eng",
     "-f", "hls",
-    "-hls_time", "2",
-    "-hls_list_size", "5",
-    "-hls_flags", "delete_segments+append_list+omit_endlist",
+    "-hls_time", "4",
+    "-hls_list_size", "12",
+    "-hls_flags", "append_list+omit_endlist+independent_segments",
     "-hls_segment_filename", path.join(dir, "seg_%05d.ts"),
     playlistPath
-  ];
+  );
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "ignore"] });
-  const session = { dir, playlistPath, ffmpeg, lastUsed: Date.now() };
+  const session = { dir, playlistPath, ffmpeg, lastUsed: Date.now(), streamId };
   liveHlsSessions.set(streamId, session);
   ffmpeg.on("close", () => {
     if (liveHlsSessions.get(streamId) === session) liveHlsSessions.delete(streamId);
@@ -602,6 +715,8 @@ async function ensureMovieHlsSession(mediaId, movieUrl) {
   const args = [
     "-hide_banner",
     "-loglevel", "error",
+    "-probesize", "32",
+    "-analyzeduration", "0",
     "-i", movieUrl,
     "-map", "0:v:0",
   ];
