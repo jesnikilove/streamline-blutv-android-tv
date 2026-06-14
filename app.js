@@ -101,6 +101,7 @@ const state = {
   movieSortAsc: true,
   usingProviderData: false,
   currentMedia: null,
+  movieScreen: "grid",
   seriesScreen: "grid",
   returnView: null,
   returnSeriesScreen: null,
@@ -1365,6 +1366,12 @@ function handleAppBack() {
     document.querySelector('[data-view="live"]')?.focus();
     return false;
   }
+  if (state.view === "movies" && state.movieScreen === "detail") {
+    state.movieScreen = "grid";
+    $("movieDetail")?.classList.add("hidden");
+    focusMovieGrid();
+    return false;
+  }
   if (state.view !== "live") {
     clearPreviewPlayer();
     setView("live");
@@ -1583,8 +1590,8 @@ function closePlayerMenu() {
 function exitFullscreenToBrowse() {
   if (isVodPlaybackActive()) stopVideoPlayback();
   exitPlayerFullscreen();
-  restoreViewAfterPlayer();
-  focusLiveBrowse();
+  const restored = restoreViewAfterPlayer();
+  if (!restored) focusLiveBrowse();
 }
 
 function focusLiveBrowse() {
@@ -2137,6 +2144,7 @@ function isTypingField(element) {
 function setView(view, options = {}) {
   if (!options.keepPlayerOpen) document.body.classList.remove("tv-player-open");
   if (state.view === "live" && view !== "live" && !options.keepPlayerOpen) stopVideoPlayback();
+  if (view === "movies" && !options.preserveMovieScreen) state.movieScreen = "grid";
   if (view === "series" && !options.preserveSeriesScreen) state.seriesScreen = "grid";
   state.view = view;
   $("homeScreen").dataset.activeView = view;
@@ -2147,7 +2155,7 @@ function setView(view, options = {}) {
   $("sectionTitle").textContent = titleForView(view);
   if (view === "live") renderLive();
   if (view === "guide") renderGuide();
-  if (view === "movies") renderMovies();
+  if (view === "movies") renderMovies(options);
   if (view === "series") renderSeries();
   if (view === "favorites") renderFavorites();
   if (view === "search") {
@@ -3872,10 +3880,13 @@ function renderMovies(options = {}) {
     tabs.appendChild(btn);
   });
 
-  let movies = state.movieCategory === "Featured" ? [...data.movies] : data.movies.filter((m) => m.category === state.movieCategory);
+  let movies = state.movieCategory === "Featured" ? data.movies : data.movies.filter((m) => m.category === state.movieCategory);
+  if (isTvApp() && movies.length > 700) movies = movies.slice(0, 700);
+  else movies = [...movies];
   movies.sort((a, b) => compareMoviesForDisplay(a, b, { titleAsc: state.movieSortAsc }));
   renderPosterGrid($("movieGrid"), movies, openMovieDetail, gridLimit);
-  renderMovieDetail();
+  if (state.movieScreen === "detail") renderMovieDetail();
+  else $("movieDetail")?.classList.add("hidden");
   if (isTvApp() && options.focusTab) {
     setTimeout(() => focusMovieCategoryTab(), 0);
   }
@@ -3884,15 +3895,24 @@ function renderMovies(options = {}) {
 function openMovieDetail(movie) {
   if (!movie) return;
   state.selectedMovieId = movie.id;
+  state.movieScreen = "detail";
   $("videoPlayer").pause();
   showPlayerControls(false);
-  setView("movies");
+  setView("movies", { preserveMovieScreen: true });
   $("sectionKicker").textContent = "Movie Info";
   $("sectionTitle").textContent = movie.title;
   renderMovieDetail();
   $("movieDetail").scrollIntoView({ behavior: "smooth", block: "start" });
   const playButton = $("moviePlayButton");
   if (playButton) playButton.focus();
+}
+
+function focusMovieGrid() {
+  const grid = $("movieGrid");
+  if (!grid) return;
+  const card = grid.querySelector(`[data-item-id="${cssEscape(state.selectedMovieId)}"]`) || grid.querySelector(".poster-card");
+  card?.focus({ preventScroll: true });
+  card?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 function renderMovieDetail() {
@@ -3910,7 +3930,6 @@ function renderMovieDetail() {
       <p class="kicker">${movie.category || "Movie"} ${movie.year || ""}</p>
       <h3>${movie.title}</h3>
       <p>${movie.description || "Movie details from the provider library."}</p>
-      ${containerRank(movie) >= 3 ? `<p class="stream-note">This provider copy is an MKV file. If it has picture but no sound, the audio track is not browser-compatible.</p>` : ""}
       <div class="movie-actions">
         <button id="moviePlayButton" class="primary-btn focusable" type="button">Play Movie</button>
         <button id="movieFavoriteButton" class="ghost-btn focusable" type="button">${isFavorite(movie.id) ? "Unfavorite" : "Favorite"}</button>
